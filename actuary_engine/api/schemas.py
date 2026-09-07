@@ -451,6 +451,29 @@ class StressTestResponse(BaseModel):
 # Visual Node-Based Contract Logic Builder Schemas
 # ────────────────────────────────────────────────────────────
 
+class ValidationSeverity(str, Enum):
+    """Severity level of a blueprint validation issue."""
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+    INFO = "INFO"
+
+
+class ValidationIssue(BaseModel):
+    """A single detected validation issue in the contract logic blueprint."""
+    severity: ValidationSeverity
+    code: str
+    message: str
+    node_id: Optional[str] = None
+    field: Optional[str] = None
+    suggested_fix: Optional[str] = None
+
+
+class ValidationResult(BaseModel):
+    """Aggregate result of a blueprint validation pass."""
+    is_valid: bool = Field(description="True if the blueprint has zero ERROR level issues.")
+    issues: list[ValidationIssue] = Field(default_factory=list, description="Detected issues.")
+
+
 class GraphNodeData(BaseModel):
     """Single node specification in the visual contract builder DAG."""
 

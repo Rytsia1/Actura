@@ -57,6 +57,9 @@ from actuary_engine.api.schemas import (
     TableListItem,
     TableUploadResponse,
     TerminalDistribution,
+    ValidationResult,
+    ValidationIssue,
+    ValidationSeverity,
 )
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
@@ -82,6 +85,7 @@ from actuary_engine.valuation.ifrs17 import IFRS17Engine
 from actuary_engine.valuation.portfolio import PortfolioSummary, PortfolioValuationEngine
 from actuary_engine.valuation.reserves import ReserveCalculator
 from actuary_engine.valuation.sensitivity import SensitivityEngine
+from actuary_engine.valuation.blueprint_validator import BlueprintValidator
 
 logger = logging.getLogger("actuary_engine.api")
 
@@ -1150,12 +1154,30 @@ def evaluate_stress_test_sliders(request: StressTestRequest) -> StressTestRespon
         raise HTTPException(status_code=500, detail=f"Stress test valuation error: {e}") from e
 
 
+@app.post("/api/v1/contracts/validate-graph", response_model=ValidationResult)
+def validate_contract_graph(payload: ContractGraphPayload) -> ValidationResult:
+    """Run full actuarial validation suite against the visual blueprint."""
+    validator = BlueprintValidator(table_lookup=table_registry)
+    return validator.validate(payload)
+
+
 @app.post("/api/v1/contracts/simulate-graph", response_model=SimulateGraphResponse)
 def simulate_contract_graph(payload: ContractGraphPayload) -> SimulateGraphResponse:
     """Evaluate a visual node-based contract logic blueprint into deterministic actuarial projections."""
     try:
+        # Pre-execution validation guard
+        validator = BlueprintValidator(table_lookup=table_registry)
+        validation_result = validator.validate(payload)
+        
+        if not validation_result.is_valid:
+            # Reconstruct the issues into a readable string or return the JSON payload
+            error_details = [i.model_dump() for i in validation_result.issues if i.severity == ValidationSeverity.ERROR]
+            raise HTTPException(status_code=400, detail={"message": "Blueprint validation failed.", "errors": error_details})
+
         simulator = ContractGraphSimulator(table_lookup=table_registry)
         return simulator.simulate(payload)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
