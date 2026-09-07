@@ -124,8 +124,12 @@ app.add_middleware(
 def health_check() -> dict[str, Any]:
     """Health check endpoint."""
     soa_table = table_registry.get_table("soa_ilt")
+    db_healthy = job_manager.check_db_health()
+    status = "healthy" if db_healthy else "unhealthy"
+    
     return {
-        "status": "healthy",
+        "status": status,
+        "database_connected": db_healthy,
         "service": "actuary-engine-api",
         "table": soa_table.name,
         "omega": str(soa_table.omega),

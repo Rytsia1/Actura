@@ -10,13 +10,12 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def clear_jobs():
     """Clear jobs table before and after each test."""
-    with job_manager._get_connection() as conn:
-        conn.execute("DELETE FROM jobs")
-        conn.commit()
+    from sqlalchemy import text
+    with job_manager.engine.begin() as conn:
+        conn.execute(text("DELETE FROM jobs"))
     yield
-    with job_manager._get_connection() as conn:
-        conn.execute("DELETE FROM jobs")
-        conn.commit()
+    with job_manager.engine.begin() as conn:
+        conn.execute(text("DELETE FROM jobs"))
 
 
 def get_base_request_dict() -> dict:

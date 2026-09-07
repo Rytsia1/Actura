@@ -13,19 +13,24 @@ See [Job Execution](./job-execution.md) for details on the asynchronous worker s
 
 ## Local Development Setup
 
-1. Install dependencies:
+1. Install pinned dependencies in a virtual environment:
    ```bash
-   poetry install
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+   pip install -r requirements.txt
+   pip install -e ".[dev]"
    ```
 
 2. Run the FastAPI development server:
    ```bash
-   poetry run uvicorn actuary_engine.api.main:app --reload
+   uvicorn actuary_engine.api.main:app --reload
    ```
 
 3. Run the test suite:
    ```bash
-   poetry run pytest
+   pytest
    ```
 
-Note: Background jobs are executed using a local `ProcessPoolExecutor` backed by a SQLite database (`jobs.db`). No Redis or Celery instance is required for local development.
+Note: Background jobs are executed using a local `ProcessPoolExecutor`. By default, job state is backed by a local SQLite database (`jobs.db`). 
+
+For production configurations or how to connect to PostgreSQL, see [Configuration & Deployment](./configuration.md).

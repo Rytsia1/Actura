@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+htmlcov/
+.benchmarks
+jobs.db
+.env
+.DS_Store
+tests/
+examples/
+docs/
