@@ -354,8 +354,13 @@ async def _compute_stochastic_valuation_core(
     progress_callback: Optional[Callable[[int, int, dict[str, Any]], Coroutine[Any, Any, None]]] = None,
 ) -> StochasticValuationResponse:
     """Internal helper to compute stochastic Monte Carlo valuation with chunking and fan chart analytics."""
-    table = table_registry.get_table(request.table_id or "soa_ilt")
+    # Handle seed generation if not explicitly provided
+    if request.seed is None:
+        import random
+        request.seed = random.randint(1, 2**31 - 1)
 
+    # Validate against table constraints
+    table = table_registry.get_table(request.table_id or "soa_ilt")
     contract = PolicyContract(
         product_type=request.product_type,
         issue_age=request.issue_age,
@@ -571,7 +576,34 @@ async def start_async_simulation(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    job = job_manager.create_job(total_paths=request.n_scenarios)
+    if request.seed is None:
+        import random
+        request.seed = random.randint(1, 2**31 - 1)
+
+    import time
+    import numpy as np
+    import pydantic
+    from actuary_engine.api.schemas import RunMetadata
+
+    run_metadata = RunMetadata(
+        seed=request.seed,
+        n_scenarios=request.n_scenarios,
+        product_type=request.product_type,
+        issue_age=request.issue_age,
+        term=request.term,
+        sum_assured=request.sum_assured,
+        table_id=request.table_id or "soa_ilt",
+        economic_model="VASICEK",
+        economic_parameters=request.vasicek.model_dump(),
+        creation_timestamp=time.time(),
+        dependency_versions={"numpy": np.__version__, "pydantic": pydantic.__version__}
+    )
+
+    job = job_manager.create_job(
+        total_paths=request.n_scenarios,
+        run_metadata=run_metadata.model_dump(),
+        original_request=request.model_dump()
+    )
     background_tasks.add_task(_run_async_simulation_task, job.job_id, request)
 
     return AsyncJobCreateResponse(
@@ -602,7 +634,35 @@ def get_simulation_status(job_id: str) -> AsyncJobStatusResponse:
         partial_metrics=job.partial_metrics,
         result=res_obj,
         error=job.error,
+        run_metadata=job.run_metadata,
+        original_request=job.original_request,
     )
+
+
+@app.post("/api/v1/valuation/stochastic/rerun/{job_id}", response_model=AsyncJobCreateResponse, status_code=202)
+async def rerun_stochastic_simulation(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    new_seed: Optional[int] = None
+) -> AsyncJobCreateResponse:
+    """Rerun an existing stochastic valuation, preserving its configuration exactly."""
+    old_job = job_manager.get_job(job_id)
+    if not old_job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    
+    if not old_job.original_request:
+        raise HTTPException(status_code=400, detail="Cannot rerun job: no original request metadata found.")
+        
+    request_data = old_job.original_request.copy()
+    if new_seed is not None:
+        request_data["seed"] = new_seed
+        
+    try:
+        new_request = StochasticValuationRequest(**request_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to reconstruct request: {e}")
+        
+    return await start_async_simulation(new_request, background_tasks)
 
 
 @app.websocket("/ws/simulations/{job_id}")

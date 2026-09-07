@@ -117,7 +117,7 @@ class StochasticValuationRequest(BaseModel):
     n_scenarios: int = Field(
         default=2000, ge=50, le=50000, description="Number of Monte Carlo scenario paths."
     )
-    seed: Optional[int] = Field(default=42, description="Random seed for reproducibility.")
+    seed: Optional[int] = Field(default=None, description="Random seed for reproducibility. Auto-generated if omitted.")
 
 
 class QuantileTrajectory(BaseModel):
@@ -176,6 +176,22 @@ class AsyncJobCreateResponse(BaseModel):
     ws_endpoint: str = Field(..., description="WebSocket URI for streaming progress.")
 
 
+class RunMetadata(BaseModel):
+    """Reproducibility metadata capturing the exact computational identity of a run."""
+    seed: int = Field(..., description="The exact random seed used.")
+    n_scenarios: int = Field(..., description="Number of paths generated.")
+    product_type: str = Field(..., description="Insurance product type.")
+    issue_age: int = Field(..., description="Issue age.")
+    term: Optional[int] = Field(..., description="Coverage term.")
+    sum_assured: float = Field(..., description="Sum assured / Face amount.")
+    table_id: str = Field(..., description="Mortality table identifier.")
+    economic_model: str = Field(..., description="Economic model used (e.g. VASICEK).")
+    economic_parameters: dict[str, Any] = Field(..., description="Parameters of the economic model.")
+    engine_version: str = Field(default="0.2.3", description="Version of Actura.")
+    creation_timestamp: float = Field(..., description="Unix timestamp of run creation.")
+    dependency_versions: dict[str, str] = Field(default_factory=dict, description="Versions of critical libraries.")
+
+
 class AsyncJobStatusResponse(BaseModel):
     """Polling response schema for job status."""
 
@@ -187,6 +203,8 @@ class AsyncJobStatusResponse(BaseModel):
     partial_metrics: Optional[dict[str, Any]] = None
     result: Optional[StochasticValuationResponse] = None
     error: Optional[str] = None
+    run_metadata: Optional[RunMetadata] = None
+    original_request: Optional[dict[str, Any]] = None
 
 
 # ────────────────────────────────────────────────────────────

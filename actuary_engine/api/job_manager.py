@@ -33,6 +33,8 @@ class SimulationJob(BaseModel):
     partial_metrics: dict[str, Any] = Field(default_factory=dict)
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+    run_metadata: Optional[dict[str, Any]] = None
+    original_request: Optional[dict[str, Any]] = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -58,11 +60,22 @@ class JobManager:
                     partial_metrics TEXT,
                     result TEXT,
                     error TEXT,
+                    run_metadata TEXT,
+                    original_request TEXT,
                     created_at REAL,
                     updated_at REAL
                 )
                 """
             )
+            # Try to add the columns if they don't exist (primitive migration)
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN run_metadata TEXT")
+            except sqlite3.OperationalError:
+                pass  # column exists
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN original_request TEXT")
+            except sqlite3.OperationalError:
+                pass  # column exists
             conn.commit()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -78,20 +91,22 @@ class JobManager:
             partial_metrics=json.loads(row["partial_metrics"]) if row["partial_metrics"] else {},
             result=json.loads(row["result"]) if row["result"] else None,
             error=row["error"],
+            run_metadata=json.loads(row["run_metadata"]) if row["run_metadata"] else None,
+            original_request=json.loads(row["original_request"]) if row["original_request"] else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
 
-    def create_job(self, total_paths: int) -> SimulationJob:
+    def create_job(self, total_paths: int, run_metadata: Optional[dict[str, Any]] = None, original_request: Optional[dict[str, Any]] = None) -> SimulationJob:
         """Register a new job in QUEUED status."""
-        job = SimulationJob(total_paths=total_paths)
+        job = SimulationJob(total_paths=total_paths, run_metadata=run_metadata, original_request=original_request)
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO jobs (
                     job_id, status, progress, completed_paths, total_paths, 
-                    partial_metrics, result, error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    partial_metrics, result, error, run_metadata, original_request, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -102,6 +117,8 @@ class JobManager:
                     json.dumps(job.partial_metrics),
                     json.dumps(job.result) if job.result else None,
                     job.error,
+                    json.dumps(job.run_metadata) if job.run_metadata else None,
+                    json.dumps(job.original_request) if job.original_request else None,
                     job.created_at,
                     job.updated_at,
                 ),
