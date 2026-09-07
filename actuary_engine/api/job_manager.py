@@ -1,10 +1,12 @@
 """
-In-memory Job Registry and WebSocket Pub/Sub Manager for Asynchronous Simulations.
+SQLite-backed Job Registry and WebSocket Pub/Sub Manager for Asynchronous Simulations.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 import time
 import uuid
 from enum import Enum
@@ -17,6 +19,7 @@ class JobStatus(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class SimulationJob(BaseModel):
@@ -37,29 +40,91 @@ class SimulationJob(BaseModel):
 class JobManager:
     """Manages life-cycle, status updates, and WebSocket broadcasting for simulation jobs."""
 
-    def __init__(self, job_ttl_seconds: int = 1800) -> None:
-        self._jobs: dict[str, SimulationJob] = {}
+    def __init__(self, db_path: str = "jobs.db") -> None:
+        self.db_path = db_path
         self._listeners: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
-        self._lock = asyncio.Lock()
-        self.job_ttl = job_ttl_seconds
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id TEXT PRIMARY KEY,
+                    status TEXT,
+                    progress REAL,
+                    completed_paths INTEGER,
+                    total_paths INTEGER,
+                    partial_metrics TEXT,
+                    result TEXT,
+                    error TEXT,
+                    created_at REAL,
+                    updated_at REAL
+                )
+                """
+            )
+            conn.commit()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _row_to_job(self, row: sqlite3.Row) -> SimulationJob:
+        return SimulationJob(
+            job_id=row["job_id"],
+            status=JobStatus(row["status"]),
+            progress=row["progress"],
+            completed_paths=row["completed_paths"],
+            total_paths=row["total_paths"],
+            partial_metrics=json.loads(row["partial_metrics"]) if row["partial_metrics"] else {},
+            result=json.loads(row["result"]) if row["result"] else None,
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
     def create_job(self, total_paths: int) -> SimulationJob:
         """Register a new job in QUEUED status."""
         job = SimulationJob(total_paths=total_paths)
-        self._jobs[job.job_id] = job
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, status, progress, completed_paths, total_paths, 
+                    partial_metrics, result, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job.job_id,
+                    job.status.value,
+                    job.progress,
+                    job.completed_paths,
+                    job.total_paths,
+                    json.dumps(job.partial_metrics),
+                    json.dumps(job.result) if job.result else None,
+                    job.error,
+                    job.created_at,
+                    job.updated_at,
+                ),
+            )
         self._listeners[job.job_id] = []
         return job
 
     def get_job(self, job_id: str) -> Optional[SimulationJob]:
         """Retrieve job state by ID."""
-        return self._jobs.get(job_id)
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row:
+                return self._row_to_job(row)
+        return None
 
     def set_processing(self, job_id: str) -> None:
         """Mark job as PROCESSING."""
-        job = self._jobs.get(job_id)
-        if job:
-            job.status = JobStatus.PROCESSING
-            job.updated_at = time.time()
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                (JobStatus.PROCESSING.value, time.time(), job_id),
+            )
 
     async def update_progress(
         self,
@@ -69,69 +134,83 @@ class JobManager:
         partial_metrics: Optional[dict[str, Any]] = None,
     ) -> None:
         """Update job progress and broadcast PROGRESS event to all active WebSocket listeners."""
-        job = self._jobs.get(job_id)
-        if not job:
-            return
-
-        job.status = JobStatus.PROCESSING
-        job.completed_paths = completed_paths
-        job.total_paths = total_paths
-        job.progress = round((completed_paths / total_paths) * 100.0, 1)
-        job.updated_at = time.time()
-        if partial_metrics:
-            job.partial_metrics = partial_metrics
+        progress = round((completed_paths / total_paths) * 100.0, 1)
+        pm_json = json.dumps(partial_metrics) if partial_metrics else "{}"
+        
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE jobs 
+                SET status = ?, progress = ?, completed_paths = ?, total_paths = ?, partial_metrics = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (JobStatus.PROCESSING.value, progress, completed_paths, total_paths, pm_json, time.time(), job_id),
+            )
 
         event = {
             "type": "PROGRESS",
             "job_id": job_id,
-            "status": job.status.value,
-            "percent": job.progress,
+            "status": JobStatus.PROCESSING.value,
+            "percent": progress,
             "completed_paths": completed_paths,
             "total_paths": total_paths,
-            "partial_metrics": job.partial_metrics,
+            "partial_metrics": partial_metrics or {},
         }
         await self._broadcast(job_id, event)
 
     async def set_completed(self, job_id: str, result_data: dict[str, Any]) -> None:
         """Mark job as COMPLETED and broadcast COMPLETE event with payload."""
-        job = self._jobs.get(job_id)
-        if not job:
-            return
-
-        job.status = JobStatus.COMPLETED
-        job.progress = 100.0
-        job.completed_paths = job.total_paths
-        job.result = result_data
-        job.updated_at = time.time()
+        with self._get_connection() as conn:
+            # Need to get total_paths to set completed_paths
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT total_paths FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if not row:
+                return
+            total_paths = row["total_paths"]
+            
+            conn.execute(
+                """
+                UPDATE jobs 
+                SET status = ?, progress = ?, completed_paths = ?, result = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (JobStatus.COMPLETED.value, 100.0, total_paths, json.dumps(result_data), time.time(), job_id),
+            )
 
         event = {
             "type": "COMPLETE",
             "job_id": job_id,
-            "status": job.status.value,
+            "status": JobStatus.COMPLETED.value,
             "percent": 100.0,
-            "completed_paths": job.total_paths,
-            "total_paths": job.total_paths,
+            "completed_paths": total_paths,
+            "total_paths": total_paths,
             "data": result_data,
         }
         await self._broadcast(job_id, event)
 
     async def set_failed(self, job_id: str, error_message: str) -> None:
         """Mark job as FAILED and broadcast ERROR event."""
-        job = self._jobs.get(job_id)
-        if not job:
-            return
-
-        job.status = JobStatus.FAILED
-        job.error = error_message
-        job.updated_at = time.time()
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE job_id = ?",
+                (JobStatus.FAILED.value, error_message, time.time(), job_id),
+            )
 
         event = {
             "type": "ERROR",
             "job_id": job_id,
-            "status": job.status.value,
+            "status": JobStatus.FAILED.value,
             "error": error_message,
         }
         await self._broadcast(job_id, event)
+
+    def set_cancelled(self, job_id: str) -> None:
+        """Mark job as CANCELLED."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                (JobStatus.CANCELLED.value, time.time(), job_id),
+            )
 
     def subscribe(self, job_id: str) -> asyncio.Queue[dict[str, Any]]:
         """Subscribe a new WebSocket connection to receive events for job_id."""
@@ -145,7 +224,7 @@ class JobManager:
         """Remove a subscriber queue when WebSocket disconnects."""
         if job_id in self._listeners and queue in self._listeners[job_id]:
             self._listeners[job_id].remove(queue)
-            if not self._listeners[job_id] and job_id not in self._jobs:
+            if not self._listeners[job_id]:
                 del self._listeners[job_id]
 
     async def _broadcast(self, job_id: str, event: dict[str, Any]) -> None:

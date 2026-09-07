@@ -335,7 +335,7 @@ class StochasticValuationEngine:
 
         return self._aggregate_metrics(scenario_bel)
 
-    async def evaluate_liability_distribution(
+    async def evaluate_liability_distribution_async(
         self,
         contract: PolicyContract,
         gross_premium: float,
@@ -407,6 +407,87 @@ class StochasticValuationEngine:
                 await progress_callback(completed, n_scenarios, partial_metrics)
                 # Yield control to event loop so WebSockets can broadcast smoothly
                 await asyncio.sleep(0.001)
+
+        full_scenario_bel = np.concatenate(all_bels)
+        final_result = self._aggregate_metrics(full_scenario_bel)
+        combined_samples = np.vstack(sample_rates) if sample_rates else np.empty((0, 0))
+
+        return final_result, combined_samples
+
+    def evaluate_liability_distribution_sync(
+        self,
+        contract: PolicyContract,
+        gross_premium: float,
+        n_scenarios: int = 10000,
+        chunk_size: int = 1000,
+        seed: Optional[int] = None,
+        surrender_values: Optional[np.ndarray] = None,
+        dt: float = 1.0,
+        compounding: str = "continuous",
+        progress_queue: Optional[Any] = None,
+    ) -> tuple[RiskMetricsResult, np.ndarray]:
+        """Execute large-scale Monte Carlo simulation synchronously with queue-based progress.
+
+        Args:
+            contract: Policy contract.
+            gross_premium: Annual gross premium.
+            n_scenarios: Total number of scenarios (e.g. 10,000+).
+            chunk_size: Vectorized batch size per iteration (default 1000).
+            seed: Master random seed.
+            surrender_values: Surrender values schedule.
+            dt: Time step.
+            compounding: Compounding method.
+            progress_queue: Optional multiprocessing.Queue to put (completed, total, partial_summary).
+
+        Returns:
+            Tuple of (RiskMetricsResult, all_short_rates_sample_matrix)
+        """
+        if n_scenarios <= 0:
+            raise ValueError(f"n_scenarios must be positive. Got {n_scenarios}.")
+
+        all_bels: list[np.ndarray] = []
+        sample_rates: list[np.ndarray] = []
+        completed = 0
+        current_seed = seed
+
+        # Number of chunks
+        n_chunks = int(np.ceil(n_scenarios / chunk_size))
+
+        for chunk_idx in range(n_chunks):
+            current_batch_size = min(chunk_size, n_scenarios - completed)
+            batch_seed = (current_seed + chunk_idx * 1000) if current_seed is not None else None
+
+            batch_bel, batch_rates = self._simulate_batch(
+                contract=contract,
+                gross_premium=gross_premium,
+                n_batch=current_batch_size,
+                seed=batch_seed,
+                surrender_values=surrender_values,
+                dt=dt,
+                compounding=compounding,
+            )
+
+            all_bels.append(batch_bel)
+            if len(sample_rates) < 15:
+                sample_rates.append(batch_rates[: min(15 - len(sample_rates), current_batch_size)])
+
+            completed += current_batch_size
+
+            # Broadcast progress to queue
+            if progress_queue is not None:
+                partial_concatenated = np.concatenate(all_bels)
+                partial_mean = float(np.mean(partial_concatenated))
+                partial_var95 = float(np.percentile(partial_concatenated, 95.0))
+                partial_metrics = {
+                    "mean_bel": round(partial_mean, 2),
+                    "var_95": round(partial_var95, 2),
+                }
+                # Put progress event on queue
+                progress_queue.put({
+                    "completed": completed,
+                    "total": n_scenarios,
+                    "partial_metrics": partial_metrics
+                })
 
         full_scenario_bel = np.concatenate(all_bels)
         final_result = self._aggregate_metrics(full_scenario_bel)

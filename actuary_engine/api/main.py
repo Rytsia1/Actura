@@ -24,7 +24,12 @@ import numpy as np
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+import queue
 
+from actuary_engine.api.worker import _cpu_worker_task
 from actuary_engine.api.job_manager import JobStatus, job_manager
 from actuary_engine.api.schemas import (
     AsyncJobCreateResponse,
@@ -80,11 +85,19 @@ from actuary_engine.valuation.sensitivity import SensitivityEngine
 
 logger = logging.getLogger("actuary_engine.api")
 
+process_pool_executor = ProcessPoolExecutor(max_workers=2)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    process_pool_executor.shutdown(wait=True)
+
 # Initialize FastAPI App
 app = FastAPI(
     title="Actuarial Valuation & Risk Engine API",
     version="0.3.0",
     description="Production-grade API for life insurance liabilities, dynamic mortality tables, reserves, and Monte Carlo risk analytics with WebSockets.",
+    lifespan=lifespan,
 )
 
 # Configure CORS for Vue 3 frontend
@@ -373,7 +386,7 @@ async def _compute_stochastic_valuation_core(
     )
 
     chunk_size = min(1000, max(250, request.n_scenarios // 10))
-    stoch_res, bel_dist = await engine.evaluate_liability_distribution(
+    stoch_res, bel_dist = await engine.evaluate_liability_distribution_async(
         contract=contract,
         gross_premium=gross_premium,
         n_scenarios=request.n_scenarios,
@@ -485,19 +498,51 @@ async def _run_async_simulation_task(job_id: str, request: StochasticValuationRe
     """Background task orchestrating chunked simulation execution and state updates."""
     job_manager.set_processing(job_id)
 
-    async def _on_progress(completed: int, total: int, partial_metrics: dict[str, Any]) -> None:
-        await job_manager.update_progress(
-            job_id=job_id,
-            completed_paths=completed,
-            total_paths=total,
-            partial_metrics=partial_metrics,
+    try:
+        table = table_registry.get_table(request.table_id or "soa_ilt")
+        table_dict = {
+            "ages": table.ages.tolist(),
+            "qx": table.qx.tolist(),
+            "name": table.name,
+            "radix": table.radix
+        }
+        request_dict = request.model_dump()
+        
+        m = multiprocessing.Manager()
+        progress_queue = m.Queue()
+
+        async def _poll_progress():
+            while True:
+                try:
+                    msg = progress_queue.get_nowait()
+                    await job_manager.update_progress(
+                        job_id=job_id,
+                        completed_paths=msg["completed"],
+                        total_paths=msg["total"],
+                        partial_metrics=msg["partial_metrics"]
+                    )
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+
+        poll_task = asyncio.create_task(_poll_progress())
+
+        loop = asyncio.get_running_loop()
+        final_res_dict = await loop.run_in_executor(
+            process_pool_executor,
+            _cpu_worker_task,
+            request_dict,
+            table_dict,
+            progress_queue
         )
 
-    try:
-        final_res = await _compute_stochastic_valuation_core(request, progress_callback=_on_progress)
-        await job_manager.set_completed(job_id, final_res.model_dump())
+        poll_task.cancel()
+        await job_manager.set_completed(job_id, final_res_dict)
     except Exception as e:
         logger.exception("Async simulation job %s failed: %s", job_id, e)
+        try:
+            poll_task.cancel()
+        except Exception:
+            pass
         await job_manager.set_failed(job_id, str(e))
 
 
