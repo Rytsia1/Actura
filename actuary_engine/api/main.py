@@ -18,12 +18,13 @@ import asyncio
 import io
 import json
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from typing import Any, Optional, Union
 
 import numpy as np
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from concurrent.futures import ProcessPoolExecutor
@@ -86,6 +87,7 @@ from actuary_engine.infrastructure.scenario_repo import scenario_repo
 from actuary_engine.services.scenario_service import scenario_service
 from actuary_engine.services.sensitivity_service import sensitivity_service
 from actuary_engine.services.run_comparison_service import run_comparison_service
+from actuary_engine.services.export_service import export_service, JobNotFoundError, JobNotExportableError
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
@@ -1735,3 +1737,90 @@ def get_job_endpoint(job_id: str):
     except Exception as e:
         logger.exception("Failed to get job %s: %s", job_id, e)
         raise HTTPException(status_code=500, detail="Could not retrieve job") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Valuation Export API Endpoints (Task 13)
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/export/{job_id}")
+def export_valuation_results(
+    job_id: str,
+    format: str = Query("xlsx", pattern="^(xlsx|csv|json|csv-zip)$"),
+    sheet: Optional[str] = Query(None, description="Optional sheet name when exporting CSV"),
+    as_zip: bool = Query(False, description="Whether to export CSVs bundled in a ZIP archive"),
+):
+    """
+    Export valuation results into Excel (.xlsx), CSV, or JSON format.
+    Strictly consumes persisted results without recalculating actuarial values.
+    """
+    try:
+        ts = int(time.time())
+        short_id = job_id[:8]
+        if format == "xlsx":
+            buf = export_service.export_excel(job_id)
+            return Response(
+                content=buf.getvalue(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "Content-Disposition": f'attachment; filename="valuation_{short_id}_{ts}.xlsx"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        elif format in ("csv-zip",) or (format == "csv" and as_zip):
+            zip_buf = export_service.export_csv(job_id, as_zip=True)
+            return Response(
+                content=zip_buf.getvalue(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="valuation_{short_id}_csvs_{ts}.zip"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        elif format == "csv":
+            csv_content = export_service.export_csv(job_id, sheet_name=sheet)
+            sheet_suffix = f"_{sheet.lower()}" if sheet else ""
+            return Response(
+                content=csv_content,
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="valuation_{short_id}{sheet_suffix}_{ts}.csv"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        elif format == "json":
+            return export_service.export_json(job_id)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported format '{format}'")
+    except JobNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except JobNotExportableError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Failed to export job %s: %s", job_id, e)
+        raise HTTPException(status_code=500, detail=f"Export error: {e}") from e
+
+
+@app.get("/api/v1/export/{job_id}/excel")
+def export_excel_shortcut(job_id: str):
+    """Shortcut endpoint to export valuation results as an Excel workbook (.xlsx)."""
+    return export_valuation_results(job_id, format="xlsx")
+
+
+@app.get("/api/v1/export/{job_id}/csv")
+def export_csv_shortcut(
+    job_id: str,
+    sheet: Optional[str] = Query(None),
+    as_zip: bool = Query(False),
+):
+    """Shortcut endpoint to export valuation results as CSV or ZIP bundle of CSVs."""
+    return export_valuation_results(job_id, format="csv", sheet=sheet, as_zip=as_zip)
+
+
+@app.get("/api/v1/export/{job_id}/json")
+def export_json_shortcut(job_id: str):
+    """Shortcut endpoint to export valuation results as structured JSON."""
+    return export_valuation_results(job_id, format="json")
+

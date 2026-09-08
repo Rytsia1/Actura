@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { fetchComparableRuns, compareRuns } from '../services/actuaryApi'
+import { fetchComparableRuns, compareRuns, downloadValuationExport } from '../services/actuaryApi'
 import BaseChart from '../components/BaseChart.vue'
 import {
   ArrowLeft,
@@ -281,9 +281,16 @@ const chartOption = computed(() => {
               <span class="w-2 h-2 rounded-full bg-sky-400"></span>
               <span>RUN A (Baseline)</span>
             </span>
-            <span v-if="comparisonData?.run_a" class="text-slate-400 text-[11px]">
-              {{ formatDate(comparisonData.run_a.created_at) }}
-            </span>
+            <div v-if="comparisonData?.run_a" class="flex items-center space-x-2">
+              <span class="text-slate-400 text-[11px]">{{ formatDate(comparisonData.run_a.created_at) }}</span>
+              <button
+                @click="downloadValuationExport(runAId, 'xlsx')"
+                class="px-2 py-0.5 text-[10px] rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 transition flex items-center gap-1 font-medium"
+                title="Export Run A (Excel)"
+              >
+                📊 Export
+              </button>
+            </div>
           </div>
           <select
             v-model="runAId"
@@ -315,9 +322,16 @@ const chartOption = computed(() => {
               <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
               <span>RUN B (Comparison)</span>
             </span>
-            <span v-if="comparisonData?.run_b" class="text-slate-400 text-[11px]">
-              {{ formatDate(comparisonData.run_b.created_at) }}
-            </span>
+            <div v-if="comparisonData?.run_b" class="flex items-center space-x-2">
+              <span class="text-slate-400 text-[11px]">{{ formatDate(comparisonData.run_b.created_at) }}</span>
+              <button
+                @click="downloadValuationExport(runBId, 'xlsx')"
+                class="px-2 py-0.5 text-[10px] rounded bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 transition flex items-center gap-1 font-medium"
+                title="Export Run B (Excel)"
+              >
+                📊 Export
+              </button>
+            </div>
           </div>
           <select
             v-model="runBId"

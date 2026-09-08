@@ -313,4 +313,72 @@ export async function compareRuns(payload, config = {}) {
   return await httpClient.post('/runs/compare', payload, config)
 }
 
+/**
+ * Generate download URL for valuation export
+ * @param {string} jobId
+ * @param {string} format 'xlsx' | 'csv' | 'json' | 'csv-zip'
+ * @param {Object} options { sheet, asZip }
+ * @returns {string}
+ */
+export function getValuationExportUrl(jobId, format = 'xlsx', options = {}) {
+  const params = new URLSearchParams()
+  params.set('format', format)
+  if (options.sheet) params.set('sheet', options.sheet)
+  if (options.asZip) params.set('as_zip', 'true')
+  return `${API_BASE}/export/${jobId}?${params.toString()}`
+}
+
+/**
+ * Download exported valuation file directly
+ * @param {string} jobId
+ * @param {string} format 'xlsx' | 'csv' | 'json' | 'csv-zip'
+ * @param {Object} options { sheet, asZip, customFilename }
+ */
+export async function downloadValuationExport(jobId, format = 'xlsx', options = {}) {
+  const url = `/export/${jobId}`
+  const params = { format }
+  if (options.sheet) params.sheet = options.sheet
+  if (options.asZip) params.as_zip = true
+
+  const responseType = format === 'json' ? 'json' : 'blob'
+  const res = await httpClient.get(url, {
+    params,
+    responseType,
+  })
+
+  if (format === 'json') {
+    const jsonStr = JSON.stringify(res, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    _triggerDownload(blob, options.customFilename || `valuation_${jobId.slice(0, 8)}.json`)
+    return res
+  }
+
+  const mimeType =
+    format === 'xlsx'
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : format === 'csv-zip' || options.asZip
+      ? 'application/zip'
+      : 'text/csv;charset=utf-8;'
+
+  const ext =
+    format === 'xlsx' ? 'xlsx' : format === 'csv-zip' || options.asZip ? 'zip' : 'csv'
+  const defaultFilename = `valuation_${jobId.slice(0, 8)}.${ext}`
+
+  const blob = new Blob([res], { type: mimeType })
+  _triggerDownload(blob, options.customFilename || defaultFilename)
+  return res
+}
+
+function _triggerDownload(blob, filename) {
+  const blobUrl = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = blobUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(blobUrl)
+}
+
+
 

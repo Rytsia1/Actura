@@ -76,12 +76,36 @@
               <button class="btn btn-sm btn-outline" @click="viewDetails(job)">Details</button>
               <button
                 class="btn btn-sm btn-outline-compare"
-                style="margin-left: 0.5rem;"
+                style="margin-left: 0.35rem;"
                 @click="compareSingleRun(job.job_id)"
                 :disabled="job.status !== 'COMPLETED'"
               >
                 Compare
               </button>
+              <div class="export-dropdown" style="display: inline-block; position: relative; margin-left: 0.35rem;">
+                <button
+                  class="btn btn-sm btn-outline-export"
+                  :disabled="job.status !== 'COMPLETED'"
+                  @click.stop="toggleExportMenu(job.job_id)"
+                  title="Export valuation results"
+                >
+                  Export ▾
+                </button>
+                <div v-if="activeExportJobId === job.job_id" class="export-menu" @click.stop>
+                  <button class="export-item" @click="handleExport(job.job_id, 'xlsx')">
+                    <span class="export-icon">📊</span> Excel (.xlsx)
+                  </button>
+                  <button class="export-item" @click="handleExport(job.job_id, 'csv')">
+                    <span class="export-icon">📄</span> CSV (.csv)
+                  </button>
+                  <button class="export-item" @click="handleExport(job.job_id, 'csv-zip')">
+                    <span class="export-icon">📦</span> CSV Bundle (.zip)
+                  </button>
+                  <button class="export-item" @click="handleExport(job.job_id, 'json')">
+                    <span class="export-icon">⚙️</span> JSON (.json)
+                  </button>
+                </div>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -92,8 +116,35 @@
     <div v-if="selectedJob" class="modal-backdrop" @click.self="selectedJob = null">
       <div class="modal-content">
         <div class="modal-header">
-          <h3>Run Details</h3>
+          <div>
+            <h3 style="margin-bottom: 0.25rem;">Run Details</h3>
+            <span class="font-mono text-xs text-muted">{{ selectedJob.job_id }}</span>
+          </div>
           <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <button
+              v-if="selectedJob.status === 'COMPLETED'"
+              class="btn btn-sm btn-export"
+              @click="handleExport(selectedJob.job_id, 'xlsx')"
+              title="Export all 9 logical sheets to Excel"
+            >
+              📊 Excel (.xlsx)
+            </button>
+            <button
+              v-if="selectedJob.status === 'COMPLETED'"
+              class="btn btn-sm btn-outline"
+              @click="handleExport(selectedJob.job_id, 'csv')"
+              title="Export full multi-section CSV"
+            >
+              📄 CSV
+            </button>
+            <button
+              v-if="selectedJob.status === 'COMPLETED'"
+              class="btn btn-sm btn-outline"
+              @click="handleExport(selectedJob.job_id, 'json')"
+              title="Export structured JSON"
+            >
+              ⚙️ JSON
+            </button>
             <button
               class="btn btn-sm btn-compare"
               @click="compareSingleRun(selectedJob.job_id)"
@@ -164,7 +215,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchJobs } from '../services/actuaryApi'
+import { fetchJobs, downloadValuationExport } from '../services/actuaryApi'
 
 const router = useRouter()
 const jobs = ref([])
@@ -172,6 +223,8 @@ const loading = ref(false)
 const error = ref(null)
 const selectedJob = ref(null)
 const selectedForCompare = ref([])
+const activeExportJobId = ref(null)
+const exporting = ref(false)
 
 let pollInterval = null
 
@@ -229,15 +282,35 @@ const loadJobs = async () => {
 
 onMounted(() => {
   loadJobs()
-  // Auto-refresh every 10 seconds
-  pollInterval = setInterval(() => {
-    loadJobs()
-  }, 10000)
+  pollInterval = setInterval(loadJobs, 5000)
+  window.addEventListener('click', closeExportMenu)
 })
 
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)
+  window.removeEventListener('click', closeExportMenu)
 })
+
+const toggleExportMenu = (jobId) => {
+  activeExportJobId.value = activeExportJobId.value === jobId ? null : jobId
+}
+
+const closeExportMenu = () => {
+  activeExportJobId.value = null
+}
+
+const handleExport = async (jobId, format) => {
+  try {
+    exporting.value = true
+    await downloadValuationExport(jobId, format)
+  } catch (err) {
+    console.error('Export failed:', err)
+    alert(`Failed to export valuation results: ${err.message || err}`)
+  } finally {
+    exporting.value = false
+    activeExportJobId.value = null
+  }
+}
 
 const shortenId = (id) => {
   if (!id) return ''
@@ -581,5 +654,84 @@ const viewDetails = (job) => {
   accent-color: #6366f1;
   width: 16px;
   height: 16px;
+}
+
+/* Valuation Export Styles */
+.btn-outline-export {
+  border: 1px solid #10b981;
+  color: #10b981;
+  background: transparent;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-outline-export:hover:not(:disabled) {
+  background-color: rgba(16, 185, 129, 0.1);
+}
+
+.btn-outline-export:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-export {
+  background-color: #10b981;
+  color: white;
+  border-radius: var(--radius);
+  padding: 0.35rem 0.75rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  transition: background-color 0.2s;
+}
+
+.btn-export:hover {
+  background-color: #059669;
+}
+
+.export-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 0.25rem;
+  background: var(--surface, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: var(--radius, 6px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  min-width: 160px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.export-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-primary, #f8fafc);
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.export-item:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #10b981;
+}
+
+.export-icon {
+  font-size: 0.9rem;
 }
 </style>
