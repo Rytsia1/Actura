@@ -112,3 +112,17 @@ def stochastic_config():
     Ensures deterministic reproducibility across Monte Carlo simulations.
     """
     return STOCHASTIC_CONFIG
+
+# --- Authentication Mocking ---
+from actuary_engine.api.main import app
+from actuary_engine.api.dependencies import get_current_user
+
+def override_get_current_user():
+    return {
+        "id": "test-admin",
+        "username": "admin",
+        "role": "Admin",
+        "organization_id": "default-org"
+    }
+
+app.dependency_overrides[get_current_user] = override_get_current_user

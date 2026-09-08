@@ -33,6 +33,13 @@ httpClient.interceptors.request.use(
     if (config.data instanceof FormData) {
       delete config.headers['Content-Type']
     }
+    
+    // Inject JWT Authorization Token
+    const token = localStorage.getItem('token')
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`
+    }
+    
     return config
   },
   (error) => {
@@ -68,6 +75,16 @@ httpClient.interceptors.response.use(
       const data = error.response.data
 
       let formattedMessage = 'An unexpected server error occurred.'
+
+      // FastAPI 401 Unauthorized (Auth Failed)
+      if (status === 401) {
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+        return Promise.reject(new ActuaryApiError('Authentication required. Please log in.', 401))
+      }
 
       // FastAPI 422 Unprocessable Entity (Schema Validation Error)
       if (status === 422 && data && Array.isArray(data.detail)) {

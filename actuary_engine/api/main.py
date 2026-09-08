@@ -33,6 +33,9 @@ import queue
 
 from actuary_engine.api.worker import _cpu_worker_task
 from actuary_engine.api.job_manager import JobStatus, job_manager
+from actuary_engine.api.dependencies import get_current_user, RoleChecker
+from actuary_engine.api.auth import router as auth_router
+from fastapi import Depends
 from actuary_engine.api.schemas import (
     AsyncJobCreateResponse,
     AsyncJobStatusResponse,
@@ -135,6 +138,8 @@ app = FastAPI(
 )
 
 # Configure CORS for Vue 3 frontend
+app.include_router(auth_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -150,7 +155,7 @@ app.add_middleware(
 )
 
 
-@app.get("/api/v1/health")
+@app.get("/api/v1/health", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def health_check() -> dict[str, Any]:
     """Health check endpoint."""
     soa_table = table_registry.get_table("soa_ilt")
@@ -171,7 +176,7 @@ def health_check() -> dict[str, Any]:
 # Mortality Table Registry & Upload Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/tables", response_model=list[TableListItem])
+@app.get("/api/v1/tables", response_model=list[TableListItem], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def list_mortality_tables() -> list[TableListItem]:
     """List all registered mortality tables (both default and custom uploaded)."""
     return [
@@ -190,7 +195,7 @@ def list_mortality_tables() -> list[TableListItem]:
     ]
 
 
-@app.get("/api/v1/tables/soa_ilt")
+@app.get("/api/v1/tables/soa_ilt", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_soa_ilt_info() -> dict[str, object]:
     """Retrieve metadata and sample mortality rates for SOA Illustrative Life Table."""
     table = table_registry.get_table("soa_ilt")
@@ -206,7 +211,7 @@ def get_soa_ilt_info() -> dict[str, object]:
     }
 
 
-@app.get("/api/v1/tables/{table_id}")
+@app.get("/api/v1/tables/{table_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_table_info(table_id: str) -> dict[str, object]:
     """Retrieve metadata for a specific mortality table by ID."""
     try:
@@ -217,7 +222,7 @@ def get_table_info(table_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
-@app.post("/api/v1/tables/upload", response_model=TableUploadResponse)
+@app.post("/api/v1/tables/upload", response_model=TableUploadResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 async def upload_mortality_table(
     file: UploadFile = File(..., description="Mortality table file (CSV, TSV, or SOA XTbML format)."),
     table_name: Optional[str] = Form(None, description="Custom display name for the table."),
@@ -262,7 +267,7 @@ async def upload_mortality_table(
         raise HTTPException(status_code=500, detail=f"Upload processing failed: {e}") from e
 
 
-@app.delete("/api/v1/tables/{table_id}")
+@app.delete("/api/v1/tables/{table_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def delete_mortality_table(table_id: str) -> dict[str, str]:
     """Delete a custom registered mortality table."""
     try:
@@ -278,7 +283,7 @@ def delete_mortality_table(table_id: str) -> dict[str, str]:
 # Valuation Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/valuation/deterministic", response_model=DeterministicValuationResponse)
+@app.post("/api/v1/valuation/deterministic", response_model=DeterministicValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_deterministic(request: DeterministicValuationRequest) -> DeterministicValuationResponse:
     """Run deterministic valuation computing net level premiums, prospective/retrospective reserves, and GPV rollout."""
     try:
@@ -551,7 +556,7 @@ async def _compute_stochastic_valuation_core(
     )
 
 
-@app.post("/api/v1/valuation/stochastic", response_model=StochasticValuationResponse)
+@app.post("/api/v1/valuation/stochastic", response_model=StochasticValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 async def evaluate_stochastic(request: StochasticValuationRequest) -> StochasticValuationResponse:
     """Synchronous endpoint for Level 4 Monte Carlo liability valuation and tail risk analytics."""
     try:
@@ -621,7 +626,7 @@ async def _run_async_simulation_task(job_id: str, request: StochasticValuationRe
         await job_manager.set_failed(job_id, str(e))
 
 
-@app.post("/api/v1/valuation/stochastic/async", response_model=AsyncJobCreateResponse, status_code=202)
+@app.post("/api/v1/valuation/stochastic/async", response_model=AsyncJobCreateResponse, status_code=202, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 async def start_async_simulation(
     request: StochasticValuationRequest,
     background_tasks: BackgroundTasks,
@@ -680,7 +685,7 @@ async def start_async_simulation(
     )
 
 
-@app.get("/api/v1/valuation/stochastic/status/{job_id}", response_model=AsyncJobStatusResponse)
+@app.get("/api/v1/valuation/stochastic/status/{job_id}", response_model=AsyncJobStatusResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_simulation_status(job_id: str) -> AsyncJobStatusResponse:
     """Poll the status and progress of an asynchronous simulation task."""
     job = job_manager.get_job(job_id)
@@ -705,7 +710,7 @@ def get_simulation_status(job_id: str) -> AsyncJobStatusResponse:
     )
 
 
-@app.post("/api/v1/valuation/stochastic/rerun/{job_id}", response_model=AsyncJobCreateResponse, status_code=202)
+@app.post("/api/v1/valuation/stochastic/rerun/{job_id}", response_model=AsyncJobCreateResponse, status_code=202, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 async def rerun_stochastic_simulation(
     job_id: str,
     background_tasks: BackgroundTasks,
@@ -800,7 +805,7 @@ async def websocket_simulation_progress(websocket: WebSocket, job_id: str) -> No
 # Portfolio Batch Valuation Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/valuation/portfolio/csv", response_model=PortfolioValuationResponse)
+@app.post("/api/v1/valuation/portfolio/csv", response_model=PortfolioValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 async def evaluate_portfolio_csv(
     file: UploadFile = File(..., description="CSV file containing seriatim policyholder records."),
     interest_rate: float = Form(0.05, description="Annual effective discount rate."),
@@ -861,7 +866,7 @@ async def evaluate_portfolio_csv(
         raise HTTPException(status_code=500, detail=f"Portfolio processing error: {e}") from e
 
 
-@app.post("/api/v1/valuation/portfolio", response_model=PortfolioValuationResponse)
+@app.post("/api/v1/valuation/portfolio", response_model=PortfolioValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_portfolio_json(request: PortfolioValuationJSONRequest) -> PortfolioValuationResponse:
     """Evaluate a portfolio of life insurance policies provided as JSON records."""
     try:
@@ -914,7 +919,7 @@ def evaluate_portfolio_json(request: PortfolioValuationJSONRequest) -> Portfolio
         raise HTTPException(status_code=500, detail=f"Portfolio processing error: {e}") from e
 
 
-@app.get("/api/v1/valuation/portfolio/sample_csv")
+@app.get("/api/v1/valuation/portfolio/sample_csv", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def download_sample_portfolio_csv(n_policies: int = 1000) -> Response:
     """Generate and return a downloadable synthetic CSV portfolio for testing."""
     df = PortfolioValuationEngine.generate_synthetic_portfolio(n_policies=min(n_policies, 50000), seed=42)
@@ -933,7 +938,7 @@ def download_sample_portfolio_csv(n_policies: int = 1000) -> Response:
 # Lee-Carter Stochastic Mortality Forecast Endpoint
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/mortality/lee-carter/forecast", response_model=LeeCarterForecastResponse)
+@app.post("/api/v1/mortality/lee-carter/forecast", response_model=LeeCarterForecastResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def forecast_lee_carter_mortality(request: LeeCarterForecastRequest) -> LeeCarterForecastResponse:
     """Fit Lee-Carter stochastic mortality model and project future longevity improvement rates."""
     table_id = request.table_id or "soa_ilt"
@@ -980,7 +985,7 @@ def forecast_lee_carter_mortality(request: LeeCarterForecastRequest) -> LeeCarte
 # IFRS 17 / PSAK 117 Valuation Endpoint
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/valuation/ifrs17", response_model=IFRS17ValuationResponse)
+@app.post("/api/v1/valuation/ifrs17", response_model=IFRS17ValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_ifrs17(request: IFRS17ValuationRequest) -> IFRS17ValuationResponse:
     """Evaluate IFRS 17 / PSAK 117 General Measurement Model (BBA) valuation."""
     table_id = request.table_id or "soa_ilt"
@@ -1069,7 +1074,7 @@ def evaluate_ifrs17(request: IFRS17ValuationRequest) -> IFRS17ValuationResponse:
 # Advanced ESG Simulation Endpoint (Hull-White 1F & CIR)
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/esg/simulate", response_model=ESGSimulationResponse)
+@app.post("/api/v1/esg/simulate", response_model=ESGSimulationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def simulate_esg_paths(request: ESGSimulationRequest) -> ESGSimulationResponse:
     """Generate multi-factor stochastic short-rate paths and compare with market discount curves."""
     try:
@@ -1194,7 +1199,7 @@ def simulate_esg_paths(request: ESGSimulationRequest) -> ESGSimulationResponse:
 # Stress Testing & Tornado Sensitivity Endpoint
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/valuation/sensitivity/tornado", response_model=SensitivityResponse)
+@app.post("/api/v1/valuation/sensitivity/tornado", response_model=SensitivityResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_sensitivity_tornado(request: SensitivityRequest) -> SensitivityResponse:
     """Run systematic multi-factor stress testing and Tornado sensitivity analysis."""
     table_id = request.table_id or "soa_ilt"
@@ -1248,7 +1253,7 @@ def evaluate_sensitivity_tornado(request: SensitivityRequest) -> SensitivityResp
 # Assumption Management Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/assumptions", response_model=list[AssumptionRead])
+@app.get("/api/v1/assumptions", response_model=list[AssumptionRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def list_assumptions(type: Optional[str] = None):
     """List the latest version of all assumptions, optionally filtered by type."""
     try:
@@ -1257,7 +1262,7 @@ def list_assumptions(type: Optional[str] = None):
         logger.exception("Failed to list assumptions")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/assumptions", response_model=AssumptionRead)
+@app.post("/api/v1/assumptions", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def create_assumption(payload: AssumptionCreate):
     """Create a completely new assumption (Version 1)."""
     try:
@@ -1267,7 +1272,7 @@ def create_assumption(payload: AssumptionCreate):
         logger.exception("Failed to create assumption")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/assumptions/{id}", response_model=AssumptionRead)
+@app.get("/api/v1/assumptions/{id}", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_assumption_latest(id: str):
     """Get the latest version of an assumption."""
     record = assumption_repo.get_latest_version(id)
@@ -1275,7 +1280,7 @@ def get_assumption_latest(id: str):
         raise HTTPException(status_code=404, detail="Assumption not found")
     return record
 
-@app.get("/api/v1/assumptions/{id}/history", response_model=list[AssumptionRead])
+@app.get("/api/v1/assumptions/{id}/history", response_model=list[AssumptionRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_assumption_history(id: str):
     """Get all versions of an assumption."""
     records = assumption_repo.get_history(id)
@@ -1283,7 +1288,7 @@ def get_assumption_history(id: str):
         raise HTTPException(status_code=404, detail="Assumption not found")
     return records
 
-@app.post("/api/v1/assumptions/{id}/version", response_model=AssumptionRead)
+@app.post("/api/v1/assumptions/{id}/version", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def create_assumption_version(id: str, payload: AssumptionVersionCreate):
     """Create a new version of an existing assumption."""
     try:
@@ -1305,7 +1310,7 @@ def create_assumption_version(id: str, payload: AssumptionVersionCreate):
         logger.exception("Failed to create assumption version")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/api/v1/assumptions/{id}/status", response_model=AssumptionRead)
+@app.put("/api/v1/assumptions/{id}/status", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def update_assumption_status(id: str, payload: AssumptionStatusUpdate):
     """Update status (e.g. DEACTIVATE) for an assumption."""
     try:
@@ -1322,13 +1327,13 @@ def update_assumption_status(id: str, payload: AssumptionStatusUpdate):
 # Base Model Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/models", response_model=list[BaseModelRead])
+@app.get("/api/v1/models", response_model=list[BaseModelRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def list_base_models():
     """List all available base actuarial models."""
     return scenario_repo.list_base_models()
 
 
-@app.get("/api/v1/models/{id}", response_model=BaseModelRead)
+@app.get("/api/v1/models/{id}", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_base_model(id: str):
     """Retrieve a specific base model by ID."""
     model = scenario_repo.get_base_model(id)
@@ -1337,7 +1342,7 @@ def get_base_model(id: str):
     return model
 
 
-@app.post("/api/v1/models", response_model=BaseModelRead)
+@app.post("/api/v1/models", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def create_base_model(payload: BaseModelCreate):
     """Create a new reusable base model."""
     try:
@@ -1352,13 +1357,13 @@ def create_base_model(payload: BaseModelCreate):
 # Scenario Management Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/scenarios", response_model=list[ScenarioRead])
+@app.get("/api/v1/scenarios", response_model=list[ScenarioRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def list_scenarios(base_model_id: Optional[str] = None, status: Optional[str] = None):
     """List actuarial scenarios, optionally filtered by base model and status."""
     return scenario_repo.list_scenarios(base_model_id=base_model_id, status=status)
 
 
-@app.post("/api/v1/scenarios", response_model=ScenarioRead)
+@app.post("/api/v1/scenarios", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def create_scenario(payload: ScenarioCreate):
     """Create a new scenario referencing a base model with assumption overrides."""
     try:
@@ -1373,7 +1378,7 @@ def create_scenario(payload: ScenarioCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/scenarios/{id}", response_model=ScenarioRead)
+@app.get("/api/v1/scenarios/{id}", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_scenario(id: str):
     """Get scenario details by ID."""
     scenario = scenario_repo.get_scenario(id)
@@ -1382,7 +1387,7 @@ def get_scenario(id: str):
     return scenario
 
 
-@app.put("/api/v1/scenarios/{id}", response_model=ScenarioRead)
+@app.put("/api/v1/scenarios/{id}", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def update_scenario(id: str, payload: ScenarioUpdate):
     """Update an existing scenario's name, description, overrides, or status."""
     data = payload.model_dump(exclude_unset=True)
@@ -1395,7 +1400,7 @@ def update_scenario(id: str, payload: ScenarioUpdate):
     return updated
 
 
-@app.post("/api/v1/scenarios/{id}/duplicate", response_model=ScenarioRead)
+@app.post("/api/v1/scenarios/{id}/duplicate", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def duplicate_scenario(id: str, name: Optional[str] = None):
     """Duplicate an existing scenario with a new ID and title."""
     dup = scenario_repo.duplicate_scenario(id, new_name=name)
@@ -1404,7 +1409,7 @@ def duplicate_scenario(id: str, name: Optional[str] = None):
     return dup
 
 
-@app.post("/api/v1/scenarios/{id}/validate", response_model=ScenarioValidationResult)
+@app.post("/api/v1/scenarios/{id}/validate", response_model=ScenarioValidationResult, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def validate_scenario(id: str):
     """Validate scenario overrides against actuarial domain rules and referenced base model."""
     result = scenario_service.validate_scenario(id)
@@ -1413,7 +1418,7 @@ def validate_scenario(id: str):
     return result
 
 
-@app.post("/api/v1/scenarios/{id}/run", response_model=ScenarioExecutionResponse)
+@app.post("/api/v1/scenarios/{id}/run", response_model=ScenarioExecutionResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def run_scenario(id: str):
     """Execute deterministic valuation for scenario, compute baseline delta, and persist in job history."""
     try:
@@ -1425,7 +1430,7 @@ def run_scenario(id: str):
         raise HTTPException(status_code=500, detail=f"Scenario execution failed: {e}")
 
 
-@app.delete("/api/v1/scenarios/{id}")
+@app.delete("/api/v1/scenarios/{id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def delete_scenario(id: str):
     """Delete a scenario."""
     deleted = scenario_repo.delete_scenario(id)
@@ -1438,13 +1443,13 @@ def delete_scenario(id: str):
 # First-Class Sensitivity Analysis Endpoints (Task 10)
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/sensitivity/defaults")
+@app.get("/api/v1/sensitivity/defaults", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_sensitivity_defaults():
     """Return default sensitivity analysis shock grid specifications."""
     return sensitivity_service.get_default_shocks()
 
 
-@app.post("/api/v1/sensitivity/analyze", response_model=SensitivityAnalysisResponse)
+@app.post("/api/v1/sensitivity/analyze", response_model=SensitivityAnalysisResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def analyze_sensitivity(request: SensitivityAnalysisRequest):
     """Run first-class sensitivity analysis across mortality, discount rate, lapse, and expense.
 
@@ -1463,7 +1468,7 @@ def analyze_sensitivity(request: SensitivityAnalysisRequest):
         raise HTTPException(status_code=500, detail=f"Sensitivity analysis failed: {e}")
 
 
-@app.get("/api/v1/sensitivity/{id}")
+@app.get("/api/v1/sensitivity/{id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_sensitivity_result(id: str):
     """Retrieve persisted sensitivity analysis results from job history."""
     from sqlalchemy import select
@@ -1497,13 +1502,13 @@ def get_sensitivity_result(id: str):
 # Run Comparison Endpoints (Task 11)
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/runs/comparable")
+@app.get("/api/v1/runs/comparable", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def list_comparable_runs(limit: int = 50):
     """Retrieve completed valuation runs available for side-by-side comparison."""
     return run_comparison_service.get_comparable_runs(limit=limit)
 
 
-@app.post("/api/v1/runs/compare", response_model=RunComparisonResponse)
+@app.post("/api/v1/runs/compare", response_model=RunComparisonResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def compare_valuation_runs(request: RunComparisonRequest):
     """Compare Run A and Run B, calculate absolute and percentage deltas, and explain differences."""
     try:
@@ -1518,7 +1523,7 @@ def compare_valuation_runs(request: RunComparisonRequest):
         raise HTTPException(status_code=500, detail=f"Run comparison failed: {e}")
 
 
-@app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse)
+@app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_stress_test_sliders(request: StressTestRequest) -> StressTestResponse:
     """Run real-time interactive stress testing with custom slider shocks."""
     base_assump = request.base_assumptions or {}
@@ -1586,14 +1591,14 @@ def evaluate_stress_test_sliders(request: StressTestRequest) -> StressTestRespon
         raise HTTPException(status_code=500, detail=f"Stress test valuation error: {e}") from e
 
 
-@app.post("/api/v1/contracts/validate-graph", response_model=ValidationResult)
+@app.post("/api/v1/contracts/validate-graph", response_model=ValidationResult, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def validate_contract_graph(payload: ContractGraphPayload) -> ValidationResult:
     """Run full actuarial validation suite against the visual blueprint."""
     validator = BlueprintValidator(table_lookup=table_registry)
     return validator.validate(payload)
 
 
-@app.post("/api/v1/contracts/simulate-graph", response_model=SimulateGraphResponse)
+@app.post("/api/v1/contracts/simulate-graph", response_model=SimulateGraphResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def simulate_contract_graph(payload: ContractGraphPayload) -> SimulateGraphResponse:
     """Evaluate a visual node-based contract logic blueprint into deterministic actuarial projections."""
     try:
@@ -1617,7 +1622,7 @@ def simulate_contract_graph(payload: ContractGraphPayload) -> SimulateGraphRespo
         raise HTTPException(status_code=500, detail=f"Graph simulation error: {e}") from e
 
 
-@app.post("/api/v1/contracts/guided/term-life", response_model=ContractGraphPayload)
+@app.post("/api/v1/contracts/guided/term-life", response_model=ContractGraphPayload, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def generate_guided_term_life(request: GuidedTermLifeRequest) -> ContractGraphPayload:
     """Generate a valid Term Life Insurance blueprint graph from guided parameters."""
     # Build nodes
@@ -1717,7 +1722,7 @@ def generate_guided_term_life(request: GuidedTermLifeRequest) -> ContractGraphPa
 # Jobs API Endpoints
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/jobs")
+@app.get("/api/v1/jobs", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def list_jobs_endpoint(limit: int = 100):
     """List recent valuation jobs."""
     try:
@@ -1727,7 +1732,7 @@ def list_jobs_endpoint(limit: int = 100):
         logger.exception("Failed to list jobs: %s", e)
         raise HTTPException(status_code=500, detail="Could not list jobs") from e
 
-@app.get("/api/v1/jobs/{job_id}")
+@app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def get_job_endpoint(job_id: str):
     """Get detailed information for a specific valuation job."""
     try:
@@ -1746,7 +1751,7 @@ def get_job_endpoint(job_id: str):
 # Valuation Export API Endpoints (Task 13)
 # ────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/export/{job_id}")
+@app.get("/api/v1/export/{job_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def export_valuation_results(
     job_id: str,
     format: str = Query("xlsx", pattern="^(xlsx|csv|json|csv-zip)$"),
@@ -1806,13 +1811,13 @@ def export_valuation_results(
         raise HTTPException(status_code=500, detail=f"Export error: {e}") from e
 
 
-@app.get("/api/v1/export/{job_id}/excel")
+@app.get("/api/v1/export/{job_id}/excel", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def export_excel_shortcut(job_id: str):
     """Shortcut endpoint to export valuation results as an Excel workbook (.xlsx)."""
     return export_valuation_results(job_id, format="xlsx")
 
 
-@app.get("/api/v1/export/{job_id}/csv")
+@app.get("/api/v1/export/{job_id}/csv", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def export_csv_shortcut(
     job_id: str,
     sheet: Optional[str] = Query(None),
@@ -1822,7 +1827,7 @@ def export_csv_shortcut(
     return export_valuation_results(job_id, format="csv", sheet=sheet, as_zip=as_zip)
 
 
-@app.get("/api/v1/export/{job_id}/json")
+@app.get("/api/v1/export/{job_id}/json", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
 def export_json_shortcut(job_id: str):
     """Shortcut endpoint to export valuation results as structured JSON."""
     return export_valuation_results(job_id, format="json")
@@ -1832,7 +1837,7 @@ def export_json_shortcut(job_id: str):
 # Model Health API Endpoints (Task 14)
 # ────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/health/model", response_model=ModelHealthReport)
+@app.post("/api/v1/health/model", response_model=ModelHealthReport, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_model_health_endpoint(request: ModelHealthRequest) -> ModelHealthReport:
     """
     Evaluate Model Health across 7 standardized categories:
@@ -1856,7 +1861,7 @@ def evaluate_model_health_endpoint(request: ModelHealthRequest) -> ModelHealthRe
         raise HTTPException(status_code=500, detail=f"Health evaluation error: {e}") from e
 
 
-@app.post("/api/v1/contracts/health", response_model=ModelHealthReport)
+@app.post("/api/v1/contracts/health", response_model=ModelHealthReport, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
 def evaluate_contract_blueprint_health_endpoint(payload: ContractGraphPayload) -> ModelHealthReport:
     """
     Evaluate Model Health directly for a visual contract logic blueprint DAG.

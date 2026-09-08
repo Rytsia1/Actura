@@ -24,6 +24,7 @@ from sqlalchemy import (
 )
 
 from actuary_engine.infrastructure.database import engine, metadata, init_db
+from actuary_engine.infrastructure.auth_repo import auth_repo
 
 base_models_table = Table(
     "base_models",
@@ -31,6 +32,7 @@ base_models_table = Table(
     Column("id", String, primary_key=True),
     Column("name", String, nullable=False),
     Column("description", String, default=""),
+    Column("project_id", String, nullable=False, default="default-project"),
     Column("product_type", String, nullable=False),
     Column("issue_age", Integer, nullable=False),
     Column("term", Integer, nullable=True),
@@ -69,7 +71,24 @@ class ScenarioRepository:
         self._seed_defaults()
 
     def _seed_defaults(self) -> None:
-        """Seed initial base models and standard scenarios if not present."""
+        """Seed initial auth and base models if not present."""
+        # 1. Seed Auth Defaults
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        
+        default_org_id = "default-org"
+        if not auth_repo.get_project_by_id("default-project"):
+            auth_repo.create_organization("Default Organization", org_id=default_org_id)
+            auth_repo.create_project("Default Project", default_org_id, "System default project", project_id="default-project")
+        
+        if not auth_repo.get_user_by_username("admin"):
+            auth_repo.create_user(
+                username="admin",
+                hashed_password=pwd_context.hash("admin"),
+                role="Admin",
+                organization_id=default_org_id,
+            )
+
         with self.engine.begin() as conn:
             # Check if default model exists
             sel = select(base_models_table.c.id).where(base_models_table.c.id == "default-endowment")
@@ -80,6 +99,7 @@ class ScenarioRepository:
                         "id": "default-endowment",
                         "name": "20-Year Endowment (Baseline)",
                         "description": "Standard 20-Year Endowment contract, issue age 30, sum assured 1,000,000, 5% interest rate",
+                        "project_id": "default-project",
                         "product_type": "endowment",
                         "issue_age": 30,
                         "term": 20,
