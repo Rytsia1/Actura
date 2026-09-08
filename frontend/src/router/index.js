@@ -4,6 +4,7 @@ import TermsOfService from '../views/TermsOfService.vue'
 import PrivacyPolicy from '../views/PrivacyPolicy.vue'
 import GuidedModeView from '../views/GuidedModeView.vue'
 import AssumptionLibraryView from '../views/AssumptionLibraryView.vue'
+import ScenarioManagementView from '../views/ScenarioManagementView.vue'
 
 const routes = [
   {
@@ -20,6 +21,11 @@ const routes = [
     path: '/assumptions',
     name: 'Assumptions',
     component: AssumptionLibraryView,
+  },
+  {
+    path: '/scenarios',
+    name: 'Scenarios',
+    component: ScenarioManagementView,
   },
   {
     path: '/history',

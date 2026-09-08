@@ -135,18 +135,6 @@ export async function fetchJobById(jobId, config = {}) {
 }
 
 /**
- * Check status of background stochastic valuation job
- * GET /api/v1/valuation/stochastic/status/{job_id}
- * 
- * @param {string} jobId - UUID of the async job
- * @param {Object} config - Optional Axios request config
- * @returns {Promise<Object>} AsyncJobStatusResponse
- */
-export async function getStochasticJobStatus(jobId, config = {}) {
-  return await httpClient.get(`/valuation/stochastic/status/${encodeURIComponent(jobId)}`, config)
-}
-
-/**
  * Run synchronous stochastic valuation (legacy / fast simulation)
  * POST /api/v1/valuation/stochastic
  * 
@@ -252,3 +240,56 @@ export async function createAssumptionVersion(id, payload) {
 export async function updateAssumptionStatus(id, status) {
   return await httpClient.put(`/assumptions/${id}/status`, { status })
 }
+
+// ────────────────────────────────────────────────────────────
+// Base Model & Scenario Management
+// ────────────────────────────────────────────────────────────
+
+export async function fetchBaseModels() {
+  return await httpClient.get('/models')
+}
+
+export async function fetchBaseModel(id) {
+  return await httpClient.get(`/models/${id}`)
+}
+
+export async function createBaseModel(payload) {
+  return await httpClient.post('/models', payload)
+}
+
+export async function fetchScenarios(baseModelId = null, status = null) {
+  const params = {}
+  if (baseModelId) params.base_model_id = baseModelId
+  if (status) params.status = status
+  return await httpClient.get('/scenarios', { params })
+}
+
+export async function fetchScenario(id) {
+  return await httpClient.get(`/scenarios/${id}`)
+}
+
+export async function createScenario(payload) {
+  return await httpClient.post('/scenarios', payload)
+}
+
+export async function updateScenario(id, payload) {
+  return await httpClient.put(`/scenarios/${id}`, payload)
+}
+
+export async function duplicateScenario(id, newName = null) {
+  const params = newName ? { name: newName } : {}
+  return await httpClient.post(`/scenarios/${id}/duplicate`, null, { params })
+}
+
+export async function validateScenario(id) {
+  return await httpClient.post(`/scenarios/${id}/validate`)
+}
+
+export async function runScenario(id) {
+  return await httpClient.post(`/scenarios/${id}/run`)
+}
+
+export async function deleteScenario(id) {
+  return await httpClient.delete(`/scenarios/${id}`)
+}
+

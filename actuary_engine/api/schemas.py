@@ -69,6 +69,151 @@ class AssumptionStatusUpdate(BaseModel):
 
 
 # ────────────────────────────────────────────────────────────
+# Scenario Management Schemas
+# ────────────────────────────────────────────────────────────
+
+class ScenarioAssumptionOverrides(BaseModel):
+    """Assumption variations and shocks relative to a base model."""
+    interest_rate_bps: Optional[float] = Field(
+        default=None, description="Shift in discount rate basis points, e.g. -100 for -100 bps."
+    )
+    interest_rate_delta: Optional[float] = Field(
+        default=None, description="Direct additive shift in annual interest rate, e.g. -0.01."
+    )
+    interest_rate_override: Optional[float] = Field(
+        default=None, description="Absolute replacement for annual interest rate."
+    )
+    mortality_multiplier: Optional[float] = Field(
+        default=None, description="Multiplicative factor on mortality rates, e.g. 1.10 for +10%."
+    )
+    mortality_table_id: Optional[str] = Field(
+        default=None, description="Alternative mortality table ID."
+    )
+    lapse_multiplier: Optional[float] = Field(
+        default=None, description="Multiplicative factor on lapse rates, e.g. 1.20."
+    )
+    lapse_rate_delta: Optional[float] = Field(
+        default=None, description="Additive shift on annual lapse rates, e.g. 0.05 for +5%."
+    )
+    lapse_override: Optional[float] = Field(
+        default=None, description="Absolute replacement for flat annual lapse rate."
+    )
+    expense_multiplier: Optional[float] = Field(
+        default=None, description="Multiplicative factor on expenses, e.g. 1.10 for +10%."
+    )
+    expense_inflation_pct: Optional[float] = Field(
+        default=None, description="Expense inflation percentage."
+    )
+    custom_overrides: Optional[dict[str, Any]] = Field(
+        default_factory=dict, description="Custom extensible overrides."
+    )
+
+
+class ScenarioCreate(BaseModel):
+    """Schema for creating a new actuarial scenario."""
+    id: Optional[str] = Field(default=None, description="Optional unique identifier (auto-generated if omitted).")
+    name: str = Field(..., description="Descriptive name of the scenario.")
+    description: str = Field(default="", description="Detailed narrative of scenario purpose and assumptions.")
+    base_model_id: str = Field(default="default-endowment", description="Reference identifier to immutable base model.")
+    overrides: ScenarioAssumptionOverrides = Field(
+        default_factory=ScenarioAssumptionOverrides, description="Assumption overrides relative to base model."
+    )
+    status: str = Field(default="ACTIVE", description="Scenario status (ACTIVE, DRAFT, ARCHIVED).")
+
+
+class ScenarioUpdate(BaseModel):
+    """Schema for updating an existing scenario."""
+    name: Optional[str] = Field(default=None, description="Updated name.")
+    description: Optional[str] = Field(default=None, description="Updated description.")
+    base_model_id: Optional[str] = Field(default=None, description="Updated base model reference.")
+    overrides: Optional[ScenarioAssumptionOverrides] = Field(default=None, description="Updated overrides.")
+    status: Optional[str] = Field(default=None, description="Updated status.")
+
+
+class ScenarioRead(BaseModel):
+    """Schema for scenario response record."""
+    id: str
+    name: str
+    description: str
+    base_model_id: str
+    overrides: dict[str, Any]
+    status: str
+    created_at: float
+    updated_at: float
+
+
+class BaseModelCreate(BaseModel):
+    """Schema for defining a reusable base actuarial model."""
+    id: Optional[str] = Field(default=None, description="Unique model identifier.")
+    name: str = Field(..., description="Model name.")
+    description: str = Field(default="", description="Model description.")
+    product_type: ProductType = Field(default=ProductType.ENDOWMENT, description="Insurance product type.")
+    issue_age: int = Field(default=30, ge=0, description="Policyholder issue age.")
+    term: Optional[int] = Field(default=20, gt=0, description="Policy term in years.")
+    sum_assured: float = Field(default=1_000_000.0, gt=0.0, description="Sum assured.")
+    premium_paying_term: Optional[int] = Field(default=None, gt=0, description="Premium paying term.")
+    interest_rate: float = Field(default=0.05, ge=0.0, le=0.50, description="Baseline annual interest rate.")
+    table_id: str = Field(default="soa_ilt", description="Mortality table identifier.")
+    expense: Optional[ExpenseAssumption] = Field(default=None, description="Baseline expense loadings.")
+    lapse: Optional[LapseAssumption] = Field(default=None, description="Baseline lapse assumptions.")
+    gross_premium: Optional[float] = Field(default=None, gt=0.0, description="Fixed gross premium override.")
+
+
+class BaseModelRead(BaseModel):
+    """Schema for reading base model information."""
+    id: str
+    name: str
+    description: str
+    product_type: str
+    issue_age: int
+    term: Optional[int]
+    sum_assured: float
+    premium_paying_term: Optional[int]
+    interest_rate: float
+    table_id: str
+    expense: dict[str, Any]
+    lapse: dict[str, Any]
+    gross_premium: Optional[float]
+    created_at: float
+    updated_at: float
+
+
+class ScenarioValidationResult(BaseModel):
+    """Result of validating scenario overrides against actuarial domain rules."""
+    scenario_id: str
+    is_valid: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    effective_assumptions: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioExecutionResponse(BaseModel):
+    """Response payload produced by executing a scenario valuation."""
+    scenario_id: str
+    scenario_name: str
+    base_model_id: str
+    valuation_type: str = "Scenario"
+    status: str = "COMPLETED"
+    job_id: str
+    effective_interest_rate: float
+    effective_mortality_multiplier: float
+    effective_lapse_rate: float
+    effective_expense_multiplier: float
+    bel: float
+    baseline_bel: Optional[float] = None
+    delta_bel: Optional[float] = None
+    pct_change_bel: Optional[float] = None
+    annual_net_premium: float
+    annual_gross_premium: float
+    nsp: float
+    annuity_factor: float
+    reserve_profile: list[dict[str, Any]] = Field(default_factory=list)
+    cash_flows: list[dict[str, Any]] = Field(default_factory=list)
+    reproducibility: dict[str, Any] = Field(default_factory=dict)
+
+
+
+# ────────────────────────────────────────────────────────────
 # Table Registry Schemas
 # ───────────────────────────────────────────────────────────
 

@@ -133,6 +133,7 @@ const navItems = [
   { id: 'table', label: 'Cohort Data', icon: 'table' },
   { id: 'portfolio', label: 'Portfolio Batch', icon: 'portfolio' },
   { id: 'assumptions', label: 'Assumptions', icon: 'database' },
+  { id: 'scenarios', label: 'Scenarios', icon: 'layers' },
   { id: 'history', label: 'Run History', icon: 'history' },
 ]
 
@@ -148,6 +149,11 @@ function formatCurrency(val) {
 function switchTab(tabId) {
   if (tabId === 'history') {
     router.push('/history')
+    sidebarOpen.value = false
+    return
+  }
+  if (tabId === 'scenarios') {
+    router.push('/scenarios')
     sidebarOpen.value = false
     return
   }
@@ -559,6 +565,9 @@ function handleCommandPaletteAction(actionId) {
     case 'upload_table':
       showTableModal.value = true
       break
+    case 'view_scenarios':
+      router.push('/scenarios')
+      break
     case 'view_history':
       router.push('/history')
       break
@@ -641,6 +650,9 @@ onUnmounted(() => {
           </svg>
           <svg v-else-if="item.icon === 'history'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+          </svg>
+          <svg v-else-if="item.icon === 'layers'" class="h-4 w-4 flex-shrink-0 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 4.5L2.25 16.5l9.75 5.25 9.75-5.25-4.179-2.25m0 0l-5.571 3-5.571-3" />
           </svg>
           <svg v-else class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M10.875 12c-.621 0-1.125.504-1.125 1.125M12 12c.621 0 1.125.504 1.125 1.125m0 0v1.5c0 .621-.504 1.125-1.125 1.125m0-3.75c-.621 0-1.125.504-1.125 1.125" />

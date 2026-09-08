@@ -68,8 +68,17 @@ from actuary_engine.api.schemas import (
     AssumptionVersionCreate,
     AssumptionRead,
     AssumptionStatusUpdate,
+    ScenarioCreate,
+    ScenarioUpdate,
+    ScenarioRead,
+    BaseModelCreate,
+    BaseModelRead,
+    ScenarioValidationResult,
+    ScenarioExecutionResponse,
 )
 from actuary_engine.infrastructure.assumption_repo import assumption_repo
+from actuary_engine.infrastructure.scenario_repo import scenario_repo
+from actuary_engine.services.scenario_service import scenario_service
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
@@ -1295,6 +1304,122 @@ def update_assumption_status(id: str, payload: AssumptionStatusUpdate):
     except Exception as e:
         logger.exception("Failed to update assumption status")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ────────────────────────────────────────────────────────────
+# Base Model Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/models", response_model=list[BaseModelRead])
+def list_base_models():
+    """List all available base actuarial models."""
+    return scenario_repo.list_base_models()
+
+
+@app.get("/api/v1/models/{id}", response_model=BaseModelRead)
+def get_base_model(id: str):
+    """Retrieve a specific base model by ID."""
+    model = scenario_repo.get_base_model(id)
+    if not model:
+        raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+    return model
+
+
+@app.post("/api/v1/models", response_model=BaseModelRead)
+def create_base_model(payload: BaseModelCreate):
+    """Create a new reusable base model."""
+    try:
+        data = payload.model_dump()
+        return scenario_repo.create_base_model(data)
+    except Exception as e:
+        logger.exception("Failed to create base model")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ────────────────────────────────────────────────────────────
+# Scenario Management Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/scenarios", response_model=list[ScenarioRead])
+def list_scenarios(base_model_id: Optional[str] = None, status: Optional[str] = None):
+    """List actuarial scenarios, optionally filtered by base model and status."""
+    return scenario_repo.list_scenarios(base_model_id=base_model_id, status=status)
+
+
+@app.post("/api/v1/scenarios", response_model=ScenarioRead)
+def create_scenario(payload: ScenarioCreate):
+    """Create a new scenario referencing a base model with assumption overrides."""
+    try:
+        data = payload.model_dump()
+        if not scenario_repo.get_base_model(data["base_model_id"]):
+            raise HTTPException(status_code=404, detail=f"Base model '{data['base_model_id']}' not found.")
+        return scenario_repo.create_scenario(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create scenario")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/scenarios/{id}", response_model=ScenarioRead)
+def get_scenario(id: str):
+    """Get scenario details by ID."""
+    scenario = scenario_repo.get_scenario(id)
+    if not scenario:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return scenario
+
+
+@app.put("/api/v1/scenarios/{id}", response_model=ScenarioRead)
+def update_scenario(id: str, payload: ScenarioUpdate):
+    """Update an existing scenario's name, description, overrides, or status."""
+    data = payload.model_dump(exclude_unset=True)
+    if "base_model_id" in data and data["base_model_id"]:
+        if not scenario_repo.get_base_model(data["base_model_id"]):
+            raise HTTPException(status_code=404, detail=f"Base model '{data['base_model_id']}' not found.")
+    updated = scenario_repo.update_scenario(id, data)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return updated
+
+
+@app.post("/api/v1/scenarios/{id}/duplicate", response_model=ScenarioRead)
+def duplicate_scenario(id: str, name: Optional[str] = None):
+    """Duplicate an existing scenario with a new ID and title."""
+    dup = scenario_repo.duplicate_scenario(id, new_name=name)
+    if not dup:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return dup
+
+
+@app.post("/api/v1/scenarios/{id}/validate", response_model=ScenarioValidationResult)
+def validate_scenario(id: str):
+    """Validate scenario overrides against actuarial domain rules and referenced base model."""
+    result = scenario_service.validate_scenario(id)
+    if not result.is_valid and result.errors and result.errors[0].endswith("not found."):
+        raise HTTPException(status_code=404, detail=result.errors[0])
+    return result
+
+
+@app.post("/api/v1/scenarios/{id}/run", response_model=ScenarioExecutionResponse)
+def run_scenario(id: str):
+    """Execute deterministic valuation for scenario, compute baseline delta, and persist in job history."""
+    try:
+        return scenario_service.execute_scenario(id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to execute scenario '%s'", id)
+        raise HTTPException(status_code=500, detail=f"Scenario execution failed: {e}")
+
+
+@app.delete("/api/v1/scenarios/{id}")
+def delete_scenario(id: str):
+    """Delete a scenario."""
+    deleted = scenario_repo.delete_scenario(id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return {"status": "deleted", "id": id}
 
 
 @app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse)
