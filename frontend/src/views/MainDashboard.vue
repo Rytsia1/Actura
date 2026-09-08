@@ -28,7 +28,7 @@ import CashFlowTable from '../components/CashFlowTable.vue'
 import ContractBuilderView from './ContractBuilderView.vue'
 import AssumptionLibraryView from './AssumptionLibraryView.vue'
 import CommandPalette from '../components/CommandPalette.vue'
-import RunHistoryModal from '../components/RunHistoryModal.vue'
+import { useRouter } from 'vue-router'
 import { createRequestState } from '../utils/useAsyncState'
 import { exportValuationCSV } from '../utils/export.js'
 
@@ -43,8 +43,7 @@ const sidebarOpen = ref(false)
 const lastRunTime = ref(null)
 
 const showCommandPalette = ref(false)
-const showHistoryModal = ref(false)
-const runHistory = ref([])
+const router = useRouter()
 
 // Individual Request States (loading, error, data lifecycle)
 const detState = createRequestState()
@@ -134,6 +133,7 @@ const navItems = [
   { id: 'table', label: 'Cohort Data', icon: 'table' },
   { id: 'portfolio', label: 'Portfolio Batch', icon: 'portfolio' },
   { id: 'assumptions', label: 'Assumptions', icon: 'database' },
+  { id: 'history', label: 'Run History', icon: 'history' },
 ]
 
 function formatCurrency(val) {
@@ -146,6 +146,11 @@ function formatCurrency(val) {
 }
 
 function switchTab(tabId) {
+  if (tabId === 'history') {
+    router.push('/history')
+    sidebarOpen.value = false
+    return
+  }
   activeTab.value = tabId
   sidebarOpen.value = false
   checkAndLazyLoadTab(tabId)
@@ -398,14 +403,6 @@ async function executeValuation() {
   await Promise.allSettled([ifrs17Task, sensTask, stochTask])
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
   lastRunTime.value = ts
-  
-  runHistory.value.unshift({
-    timestamp: ts,
-    product: form.product_type,
-    age: form.issue_age,
-    term: form.term,
-    bel: stochState.data.value?.mean_bel ?? detState.data.value?.bel
-  })
 }
 
 // On-demand lazy loader for tabs
@@ -563,7 +560,7 @@ function handleCommandPaletteAction(actionId) {
       showTableModal.value = true
       break
     case 'view_history':
-      showHistoryModal.value = true
+      router.push('/history')
       break
     case 'tab_overview':
       switchTab('overview')
@@ -641,6 +638,9 @@ onUnmounted(() => {
           </svg>
           <svg v-else-if="item.icon === 'cashflow'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+          </svg>
+          <svg v-else-if="item.icon === 'history'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
           </svg>
           <svg v-else class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M10.875 12c-.621 0-1.125.504-1.125 1.125M12 12c.621 0 1.125.504 1.125 1.125m0 0v1.5c0 .621-.504 1.125-1.125 1.125m0-3.75c-.621 0-1.125.504-1.125 1.125" />
@@ -989,8 +989,5 @@ onUnmounted(() => {
         </div>
       </footer>
     </div>
-    
-    <!-- Modals -->
-    <RunHistoryModal v-model="showHistoryModal" :history="runHistory" />
   </div>
 </template>

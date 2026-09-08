@@ -110,6 +110,14 @@ class JobManager:
         self._listeners[job.job_id] = []
         return job
 
+    def list_jobs(self, limit: int = 100) -> list[SimulationJob]:
+        """Retrieve the latest jobs, sorted by creation time descending."""
+        from sqlalchemy import desc
+        stmt = select(self.jobs_table).order_by(desc(self.jobs_table.c.created_at)).limit(limit)
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+            return [self._row_to_job(row) for row in rows]
+
     def get_job(self, job_id: str) -> Optional[SimulationJob]:
         """Retrieve job state by ID."""
         stmt = select(self.jobs_table).where(self.jobs_table.c.job_id == job_id)

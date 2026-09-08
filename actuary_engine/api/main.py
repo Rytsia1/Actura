@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from collections.abc import Callable, Coroutine
 from typing import Any, Optional, Union
@@ -342,7 +343,7 @@ def evaluate_deterministic(request: DeterministicValuationRequest) -> Determinis
                 "pv_net_liability": round(float(row["pv_net_liability"]), 2),
             })
 
-        return DeterministicValuationResponse(
+        response = DeterministicValuationResponse(
             product_type=contract.product_type.value,
             issue_age=contract.issue_age,
             term=contract.term,
@@ -357,6 +358,38 @@ def evaluate_deterministic(request: DeterministicValuationRequest) -> Determinis
             reserve_profile=reserve_profile_data,
             cash_flows=cash_flows,
         )
+
+        import time
+        from sqlalchemy import update
+        
+        run_meta_dict = {
+            "engine_version": "1.0.0",
+            "execution_time": time.time(),
+            "valuation_type": "Deterministic",
+            "scenario": "Base",
+        }
+        
+        job = job_manager.create_job(
+            total_paths=1,
+            run_metadata=run_meta_dict,
+            original_request=request.model_dump()
+        )
+        
+        stmt = (
+            update(job_manager.jobs_table)
+            .where(job_manager.jobs_table.c.job_id == job.job_id)
+            .values(
+                status="COMPLETED",
+                progress=100.0,
+                completed_paths=1,
+                result=json.dumps(response.model_dump() if hasattr(response, 'model_dump') else response.dict()),
+                updated_at=time.time()
+            )
+        )
+        with job_manager.engine.begin() as conn:
+            conn.execute(stmt)
+
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -961,7 +994,7 @@ def evaluate_ifrs17(request: IFRS17ValuationRequest) -> IFRS17ValuationResponse:
             gross_premium=request.gross_premium,
         )
 
-        return IFRS17ValuationResponse(
+        response = IFRS17ValuationResponse(
             table_id=table_id,
             table_name=table.name,
             product_type=request.product_type,
@@ -972,6 +1005,38 @@ def evaluate_ifrs17(request: IFRS17ValuationRequest) -> IFRS17ValuationResponse:
             total_csm_released=val_result.total_csm_released,
             total_service_expenses=val_result.total_service_expenses,
         )
+
+        import time
+        from sqlalchemy import update
+        
+        run_meta_dict = {
+            "engine_version": "1.0.0",
+            "execution_time": time.time(),
+            "valuation_type": "IFRS17",
+            "scenario": "Base",
+        }
+        
+        job = job_manager.create_job(
+            total_paths=1,
+            run_metadata=run_meta_dict,
+            original_request=request.model_dump()
+        )
+        
+        stmt = (
+            update(job_manager.jobs_table)
+            .where(job_manager.jobs_table.c.job_id == job.job_id)
+            .values(
+                status="COMPLETED",
+                progress=100.0,
+                completed_paths=1,
+                result=json.dumps(response.model_dump() if hasattr(response, 'model_dump') else response.dict()),
+                updated_at=time.time()
+            )
+        )
+        with job_manager.engine.begin() as conn:
+            conn.execute(stmt)
+
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -1426,3 +1491,31 @@ def generate_guided_term_life(request: GuidedTermLifeRequest) -> ContractGraphPa
         raise HTTPException(status_code=400, detail=f"Generated blueprint is invalid: {error_msgs}")
 
     return payload
+
+# ────────────────────────────────────────────────────────────
+# Jobs API Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/jobs")
+def list_jobs_endpoint(limit: int = 100):
+    """List recent valuation jobs."""
+    try:
+        jobs = job_manager.list_jobs(limit=limit)
+        return jobs
+    except Exception as e:
+        logger.exception("Failed to list jobs: %s", e)
+        raise HTTPException(status_code=500, detail="Could not list jobs") from e
+
+@app.get("/api/v1/jobs/{job_id}")
+def get_job_endpoint(job_id: str):
+    """Get detailed information for a specific valuation job."""
+    try:
+        job = job_manager.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get job %s: %s", job_id, e)
+        raise HTTPException(status_code=500, detail="Could not retrieve job") from e

@@ -22,6 +22,11 @@ const routes = [
     component: AssumptionLibraryView,
   },
   {
+    path: '/history',
+    name: 'History',
+    component: () => import('../views/RunHistoryView.vue'),
+  },
+  {
     path: '/terms',
     name: 'Terms',
     component: TermsOfService,

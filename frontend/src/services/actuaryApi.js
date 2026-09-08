@@ -99,6 +99,54 @@ export async function getStochasticJobStatus(jobId, config = {}) {
 }
 
 /**
+ * Start asynchronous Monte Carlo stochastic ESG simulation job
+ * POST /api/v1/esg/simulate/async
+ * 
+ * @param {Object} payload - ESGSimulationRequest
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} AsyncJobCreateResponse { job_id, status }
+ */
+export async function startAsyncESGSimulation(payload, config = {}) {
+  return await httpClient.post('/esg/simulate/async', payload, config)
+}
+
+/**
+ * Fetch persistent run history jobs
+ * GET /api/v1/jobs
+ * 
+ * @param {number} limit - Number of jobs to fetch
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Array>} Array of jobs
+ */
+export async function fetchJobs(limit = 100, config = {}) {
+  return await httpClient.get(`/jobs?limit=${limit}`, config)
+}
+
+/**
+ * Fetch a persistent job by ID
+ * GET /api/v1/jobs/{job_id}
+ * 
+ * @param {string} jobId - The job ID
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} Job data
+ */
+export async function fetchJobById(jobId, config = {}) {
+  return await httpClient.get(`/jobs/${encodeURIComponent(jobId)}`, config)
+}
+
+/**
+ * Check status of background stochastic valuation job
+ * GET /api/v1/valuation/stochastic/status/{job_id}
+ * 
+ * @param {string} jobId - UUID of the async job
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} AsyncJobStatusResponse
+ */
+export async function getStochasticJobStatus(jobId, config = {}) {
+  return await httpClient.get(`/valuation/stochastic/status/${encodeURIComponent(jobId)}`, config)
+}
+
+/**
  * Run synchronous stochastic valuation (legacy / fast simulation)
  * POST /api/v1/valuation/stochastic
  * 
