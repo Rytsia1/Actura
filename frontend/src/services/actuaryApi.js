@@ -380,5 +380,26 @@ function _triggerDownload(blob, filename) {
   window.URL.revokeObjectURL(blobUrl)
 }
 
+/**
+ * Evaluate Model Health for visual contract blueprint DAG
+ * POST /api/v1/contracts/health
+ * @param {Object} payload ContractGraphPayload
+ * @returns {Promise<Object>} ModelHealthReport
+ */
+export async function evaluateContractHealth(payload, config = {}) {
+  return await httpClient.post('/contracts/health', payload, config)
+}
+
+/**
+ * Evaluate Model Health for arbitrary model payload or configuration
+ * POST /api/v1/health/model
+ * @param {Object} payload { blueprint, configuration }
+ * @returns {Promise<Object>} ModelHealthReport
+ */
+export async function evaluateModelHealth(payload, config = {}) {
+  return await httpClient.post('/health/model', payload, config)
+}
+
+
 
 

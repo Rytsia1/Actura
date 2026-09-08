@@ -20,6 +20,9 @@ import {
   X,
   Layers,
   Search,
+  ShieldCheck,
+  AlertTriangle,
+  AlertOctagon,
 } from 'lucide-vue-next'
 
 import '@vue-flow/core/dist/style.css'
@@ -33,9 +36,10 @@ import ContingencyNode from '../components/nodes/ContingencyNode.vue'
 import OutflowNode from '../components/nodes/OutflowNode.vue'
 import ValuationSinkNode from '../components/nodes/ValuationSinkNode.vue'
 import AccumulatorNode from '../components/nodes/AccumulatorNode.vue'
+import ModelHealthDrawer from '../components/ModelHealthDrawer.vue'
 
 import { PRESET_TEMPLATES, layoutGraph } from '../utils/presets'
-import { simulateContractGraph } from '../services/actuaryApi'
+import { simulateContractGraph, evaluateContractHealth } from '../services/actuaryApi'
 
 // ────────────────────────────────────────────────────────────
 // Custom Node Registrations (markRaw for Vue reactivity performance)
@@ -61,6 +65,10 @@ const simulationError = ref(null)
 const showResultsDrawer = ref(false)
 const selectedTrace = ref(null)
 const isTraceDrawerOpen = ref(false)
+
+const modelHealthReport = ref(null)
+const isHealthDrawerOpen = ref(false)
+const isEvaluatingHealth = ref(false)
 
 const { project, fitView, addNodes, onConnect, addEdges } = useVueFlow()
 
@@ -96,6 +104,7 @@ function loadPreset(presetKey) {
 
   nextTick(() => {
     fitView({ padding: 0.2, duration: 400 })
+    checkModelHealth()
   })
 }
 
@@ -218,9 +227,86 @@ onConnect((params) => {
 // ────────────────────────────────────────────────────────────
 // Simulation Execution & Results Render
 // ────────────────────────────────────────────────────────────
+// Simulation & Health Execution
+// ────────────────────────────────────────────────────────────
+function getCurrentPayload() {
+  return {
+    contract_id: `GRAPH-${selectedPresetId.value || 'CUSTOM'}`,
+    nodes: nodes.value.map((n) => ({
+      id: n.id,
+      type: n.type,
+      data: n.data || {},
+      position: n.position,
+    })),
+    edges: edges.value.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle || null,
+      targetHandle: e.targetHandle || null,
+    })),
+  }
+}
+
+async function checkModelHealth() {
+  if (nodes.value.length === 0) {
+    modelHealthReport.value = null
+    return
+  }
+  isEvaluatingHealth.value = true
+  try {
+    const payload = getCurrentPayload()
+    const res = await evaluateContractHealth(payload)
+    modelHealthReport.value = res.data || res
+  } catch (err) {
+    console.warn('Health evaluation error:', err)
+  } finally {
+    isEvaluatingHealth.value = false
+  }
+}
+
+function openHealthDrawer() {
+  checkModelHealth()
+  isHealthDrawerOpen.value = true
+}
+
+function handleHighlightNode(nodeId) {
+  if (!nodeId) return
+  nodes.value = nodes.value.map((n) => ({
+    ...n,
+    class:
+      n.id === nodeId
+        ? 'ring-4 ring-amber-500 ring-offset-4 ring-offset-[#0B0F19] shadow-[0_0_30px_rgba(245,158,11,0.5)] z-50 scale-105 transition-all duration-300'
+        : 'opacity-40 transition-all duration-300',
+  }))
+  isHealthDrawerOpen.value = false
+  setTimeout(() => {
+    fitView({ nodes: [nodeId], padding: 0.6, duration: 600 })
+  }, 100)
+}
+
+const healthButtonClass = computed(() => {
+  if (!modelHealthReport.value) return 'bg-slate-800 text-slate-300 border-slate-700'
+  if (modelHealthReport.value.overall_status === 'PASS') {
+    return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+  }
+  if (modelHealthReport.value.overall_status === 'WARNING') {
+    return 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+  }
+  return 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20 animate-pulse'
+})
+
 async function runSimulation() {
   if (nodes.value.length === 0) {
     simulationError.value = 'Canvas is empty. Add nodes or load a preset template.'
+    return
+  }
+
+  // Pre-flight Model Health audit
+  await checkModelHealth()
+  if (modelHealthReport.value && !modelHealthReport.value.is_ready_to_run) {
+    isHealthDrawerOpen.value = true
+    simulationError.value = 'Pre-flight check failed: Model has critical defects. Open Model Health to inspect blockers.'
     return
   }
 
@@ -485,6 +571,21 @@ onUnmounted(() => {
           title="Clear all nodes"
         >
           <Trash2 class="h-3.5 w-3.5" />
+        </button>
+
+        <!-- Model Health Pre-flight Indicator Button -->
+        <button
+          @click="openHealthDrawer"
+          :class="[
+            'text-xs px-3 py-1.5 flex items-center space-x-1.5 rounded-md border font-medium transition',
+            healthButtonClass
+          ]"
+          title="Inspect Model Health across 7 categories before valuation"
+        >
+          <ShieldCheck v-if="modelHealthReport?.overall_status === 'PASS'" class="h-3.5 w-3.5 text-emerald-400" />
+          <AlertTriangle v-else-if="modelHealthReport?.overall_status === 'WARNING'" class="h-3.5 w-3.5 text-amber-400" />
+          <AlertOctagon v-else class="h-3.5 w-3.5 text-rose-400" />
+          <span>Health: {{ modelHealthReport?.overall_score ?? '--' }}/100</span>
         </button>
 
         <button
@@ -764,6 +865,16 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 5. MODEL HEALTH DRAWER -->
+    <ModelHealthDrawer
+      :isOpen="isHealthDrawerOpen"
+      :report="modelHealthReport"
+      :loading="isEvaluatingHealth"
+      @close="isHealthDrawerOpen = false"
+      @recheck="checkModelHealth"
+      @highlightNode="handleHighlightNode"
+    />
 
   </div>
 </template>

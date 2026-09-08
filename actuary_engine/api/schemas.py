@@ -4,6 +4,7 @@ Pydantic Request and Response schemas for the Actuarial Valuation API.
 
 from __future__ import annotations
 
+import time
 from enum import Enum
 from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
@@ -915,6 +916,57 @@ class SimulateGraphResponse(BaseModel):
     reserves: list[float]
     breakdown: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, ProvenanceTrace] = Field(default_factory=dict, description="Deterministic calculation provenance traces mapping metrics back to source nodes.")
+
+
+# ────────────────────────────────────────────────────────────
+# Model Health Schemas (Task 14)
+# ────────────────────────────────────────────────────────────
+
+class HealthStatus(str, Enum):
+    """Overall and categorical health status indicator."""
+    PASS = "PASS"
+    WARNING = "WARNING"
+    FAIL = "FAIL"
+
+
+class HealthIssue(BaseModel):
+    """Specific detected defect, risk, or validation note with deep linking metadata."""
+    code: str = Field(description="Machine-readable issue code.")
+    severity: ValidationSeverity = Field(description="Severity: ERROR, WARNING, INFO.")
+    message: str = Field(description="Human-readable explanation of the issue.")
+    node_id: Optional[str] = Field(default=None, description="Linked DAG node identifier.")
+    field: Optional[str] = Field(default=None, description="Linked parameter field name.")
+    assumption_id: Optional[str] = Field(default=None, description="Linked assumption identifier.")
+    suggested_fix: Optional[str] = Field(default=None, description="Actionable recommendation to fix the issue.")
+
+
+class ModelHealthCategory(BaseModel):
+    """Individual health evaluation across one of the 7 standardized categories."""
+    name: str = Field(description="Category name.")
+    status: HealthStatus = Field(description="Categorical status: PASS, WARNING, FAIL.")
+    score: int = Field(ge=0, le=100, description="Category score out of 100.")
+    issues: list[HealthIssue] = Field(default_factory=list, description="Blocking errors detected.")
+    warnings: list[HealthIssue] = Field(default_factory=list, description="Non-blocking actuarial concerns.")
+    recommendations: list[str] = Field(default_factory=list, description="Actionable advice for achieving 100% health.")
+    metrics: dict[str, Any] = Field(default_factory=dict, description="Detailed diagnostic metrics.")
+
+
+class ModelHealthReport(BaseModel):
+    """Comprehensive Model Health report evaluating readiness and audit trust."""
+    overall_status: HealthStatus = Field(description="Overall health status: PASS, WARNING, or FAIL.")
+    is_ready_to_run: bool = Field(description="True if model can be safely executed without blocking errors.")
+    overall_score: int = Field(ge=0, le=100, description="Explainable health score from 0 to 100.")
+    score_breakdown: list[str] = Field(default_factory=list, description="Itemized, explainable score calculation.")
+    categories: dict[str, ModelHealthCategory] = Field(description="Detailed evaluations for each of the 7 categories.")
+    summary_headline: str = Field(description="Short executive takeaway.")
+    created_at: float = Field(default_factory=time.time, description="Unix evaluation timestamp.")
+
+
+class ModelHealthRequest(BaseModel):
+    """Request payload to evaluate model health from either a visual graph or model configuration."""
+    blueprint: Optional[ContractGraphPayload] = None
+    configuration: Optional[dict[str, Any]] = None
+
 
 
 

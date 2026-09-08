@@ -81,6 +81,8 @@ from actuary_engine.api.schemas import (
     SensitivityShockConfig,
     RunComparisonRequest,
     RunComparisonResponse,
+    ModelHealthRequest,
+    ModelHealthReport,
 )
 from actuary_engine.infrastructure.assumption_repo import assumption_repo
 from actuary_engine.infrastructure.scenario_repo import scenario_repo
@@ -88,6 +90,7 @@ from actuary_engine.services.scenario_service import scenario_service
 from actuary_engine.services.sensitivity_service import sensitivity_service
 from actuary_engine.services.run_comparison_service import run_comparison_service
 from actuary_engine.services.export_service import export_service, JobNotFoundError, JobNotExportableError
+from actuary_engine.services.model_health_service import model_health_service
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
@@ -1823,4 +1826,45 @@ def export_csv_shortcut(
 def export_json_shortcut(job_id: str):
     """Shortcut endpoint to export valuation results as structured JSON."""
     return export_valuation_results(job_id, format="json")
+
+
+# ────────────────────────────────────────────────────────────
+# Model Health API Endpoints (Task 14)
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/health/model", response_model=ModelHealthReport)
+def evaluate_model_health_endpoint(request: ModelHealthRequest) -> ModelHealthReport:
+    """
+    Evaluate Model Health across 7 standardized categories:
+    Structure, Data, Assumptions, Validation, Coverage, Reproducibility, Configuration completeness.
+    Provides explainable readiness score, defect analysis, and deep link metadata.
+    """
+    try:
+        if request.blueprint is not None:
+            return model_health_service.evaluate_blueprint(request.blueprint)
+        elif request.configuration is not None:
+            return model_health_service.evaluate_model_config(request.configuration)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'blueprint' (ContractGraphPayload) or 'configuration' (dict) to evaluate."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Model health evaluation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Health evaluation error: {e}") from e
+
+
+@app.post("/api/v1/contracts/health", response_model=ModelHealthReport)
+def evaluate_contract_blueprint_health_endpoint(payload: ContractGraphPayload) -> ModelHealthReport:
+    """
+    Evaluate Model Health directly for a visual contract logic blueprint DAG.
+    """
+    try:
+        return model_health_service.evaluate_blueprint(payload)
+    except Exception as e:
+        logger.exception("Blueprint health evaluation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Blueprint health evaluation error: {e}") from e
+
 
