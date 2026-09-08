@@ -15,6 +15,60 @@ from actuary_engine.stochastic.esg import VasicekParams
 
 
 # ────────────────────────────────────────────────────────────
+# Assumption Management Schemas
+# ────────────────────────────────────────────────────────────
+
+class AssumptionType(str, Enum):
+    MORTALITY = "mortality"
+    LAPSE = "lapse"
+    EXPENSE = "expense"
+    INTEREST = "interest"
+    INFLATION = "inflation"
+    ECONOMIC = "economic"
+
+class AssumptionCreate(BaseModel):
+    """Schema for creating a completely new assumption."""
+    name: str = Field(..., description="Name of the assumption.")
+    type: AssumptionType = Field(..., description="Category of the assumption.")
+    description: str = Field(default="", description="Detailed description.")
+    source: str = Field(default="", description="Source or methodology reference.")
+    effective_date: str = Field(default="", description="Effective date (YYYY-MM-DD).")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Configuration parameters.")
+
+class AssumptionVersionCreate(BaseModel):
+    """Schema for creating a new version of an existing assumption."""
+    name: Optional[str] = Field(default=None, description="Name (if changed).")
+    type: Optional[AssumptionType] = Field(default=None, description="Category (if changed).")
+    description: str = Field(default="", description="Detailed description.")
+    source: str = Field(default="", description="Source or methodology reference.")
+    effective_date: str = Field(default="", description="Effective date (YYYY-MM-DD).")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Configuration parameters.")
+
+class AssumptionRead(BaseModel):
+    """Schema for returning assumption records."""
+    id: str
+    version: int
+    name: str
+    type: AssumptionType
+    description: str
+    source: str
+    effective_date: str
+    status: str
+    parameters: dict[str, Any]
+    created_by: str
+    created_at: float
+    updated_at: float
+
+class AssumptionReference(BaseModel):
+    """Reference tracking exactly which version of an assumption was used."""
+    assumption_id: str
+    version: int
+
+class AssumptionStatusUpdate(BaseModel):
+    status: str = Field(..., description="ACTIVE or INACTIVE")
+
+
+# ────────────────────────────────────────────────────────────
 # Table Registry Schemas
 # ───────────────────────────────────────────────────────────
 
@@ -70,6 +124,9 @@ class DeterministicValuationRequest(BaseModel):
     lapse: Optional[LapseAssumption] = Field(
         default=None, description="Policyholder lapse decrement rates."
     )
+    assumption_refs: Optional[list[AssumptionReference]] = Field(
+        default=None, description="List of exact assumption versions utilized."
+    )
 
 
 class DeterministicValuationResponse(BaseModel):
@@ -118,6 +175,9 @@ class StochasticValuationRequest(BaseModel):
         default=2000, ge=50, le=50000, description="Number of Monte Carlo scenario paths."
     )
     seed: Optional[int] = Field(default=None, description="Random seed for reproducibility. Auto-generated if omitted.")
+    assumption_refs: Optional[list[AssumptionReference]] = Field(
+        default=None, description="List of exact assumption versions utilized."
+    )
 
 
 class QuantileTrajectory(BaseModel):

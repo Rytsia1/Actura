@@ -63,7 +63,12 @@ from actuary_engine.api.schemas import (
     ValidationResult,
     ValidationIssue,
     ValidationSeverity,
+    AssumptionCreate,
+    AssumptionVersionCreate,
+    AssumptionRead,
+    AssumptionStatusUpdate,
 )
+from actuary_engine.infrastructure.assumption_repo import assumption_repo
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
@@ -1151,6 +1156,80 @@ def evaluate_sensitivity_tornado(request: SensitivityRequest) -> SensitivityResp
     except Exception as e:
         logger.exception("Sensitivity analysis failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Sensitivity analysis error: {e}") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Assumption Management Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/assumptions", response_model=list[AssumptionRead])
+def list_assumptions(type: Optional[str] = None):
+    """List the latest version of all assumptions, optionally filtered by type."""
+    try:
+        return assumption_repo.list_latest_assumptions(assump_type=type)
+    except Exception as e:
+        logger.exception("Failed to list assumptions")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/assumptions", response_model=AssumptionRead)
+def create_assumption(payload: AssumptionCreate):
+    """Create a completely new assumption (Version 1)."""
+    try:
+        data = payload.model_dump()
+        return assumption_repo.create_assumption(data)
+    except Exception as e:
+        logger.exception("Failed to create assumption")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/assumptions/{id}", response_model=AssumptionRead)
+def get_assumption_latest(id: str):
+    """Get the latest version of an assumption."""
+    record = assumption_repo.get_latest_version(id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Assumption not found")
+    return record
+
+@app.get("/api/v1/assumptions/{id}/history", response_model=list[AssumptionRead])
+def get_assumption_history(id: str):
+    """Get all versions of an assumption."""
+    records = assumption_repo.get_history(id)
+    if not records:
+        raise HTTPException(status_code=404, detail="Assumption not found")
+    return records
+
+@app.post("/api/v1/assumptions/{id}/version", response_model=AssumptionRead)
+def create_assumption_version(id: str, payload: AssumptionVersionCreate):
+    """Create a new version of an existing assumption."""
+    try:
+        record = assumption_repo.get_latest_version(id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Assumption not found")
+            
+        data = payload.model_dump(exclude_unset=True)
+        # Inherit fields if not provided
+        if "name" not in data or not data["name"]:
+            data["name"] = record["name"]
+        if "type" not in data or not data["type"]:
+            data["type"] = record["type"]
+            
+        return assumption_repo.create_new_version(id, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to create assumption version")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/assumptions/{id}/status", response_model=AssumptionRead)
+def update_assumption_status(id: str, payload: AssumptionStatusUpdate):
+    """Update status (e.g. DEACTIVATE) for an assumption."""
+    try:
+        record = assumption_repo.update_status(id, payload.status)
+        if not record:
+            raise HTTPException(status_code=404, detail="Assumption not found")
+        return record
+    except Exception as e:
+        logger.exception("Failed to update assumption status")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse)

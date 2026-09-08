@@ -26,6 +26,7 @@ import SensitivityDashboard from '../components/SensitivityDashboard.vue'
 import PortfolioDashboard from '../components/PortfolioDashboard.vue'
 import CashFlowTable from '../components/CashFlowTable.vue'
 import ContractBuilderView from './ContractBuilderView.vue'
+import AssumptionLibraryView from './AssumptionLibraryView.vue'
 import CommandPalette from '../components/CommandPalette.vue'
 import RunHistoryModal from '../components/RunHistoryModal.vue'
 import { createRequestState } from '../utils/useAsyncState'
@@ -132,6 +133,7 @@ const navItems = [
   { id: 'cashflows', label: 'Cash Flows', icon: 'cashflow' },
   { id: 'table', label: 'Cohort Data', icon: 'table' },
   { id: 'portfolio', label: 'Portfolio Batch', icon: 'portfolio' },
+  { id: 'assumptions', label: 'Assumptions', icon: 'database' },
 ]
 
 function formatCurrency(val) {
@@ -911,6 +913,13 @@ onUnmounted(() => {
       <!-- ═══════════════════════════════════════════════════════ -->
       <section v-show="activeTab === 'builder'" class="p-0">
         <ContractBuilderView />
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <!-- ASSUMPTION LIBRARY TAB                                  -->
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <section v-show="activeTab === 'assumptions'" class="px-6 py-4 h-full">
+        <AssumptionLibraryView />
       </section>
 
       <!-- ═══════════════════════════════════════════════════════ -->

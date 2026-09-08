@@ -14,8 +14,8 @@ from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 
-from sqlalchemy import create_engine, Table, Column, String, Float, Integer, MetaData, select, update, text
-from sqlalchemy.exc import OperationalError
+from actuary_engine.infrastructure.database import engine, metadata, init_db, check_db_health
+from sqlalchemy import Table, Column, String, Float, Integer, select, update, text
 
 class JobStatus(str, Enum):
     QUEUED = "QUEUED"
@@ -46,18 +46,8 @@ class JobManager:
     """Manages life-cycle, status updates, and WebSocket broadcasting for simulation jobs."""
 
     def __init__(self) -> None:
-        db_url = os.environ.get("DATABASE_URL", "sqlite:///jobs.db")
-        
-        # SQLAlchemy requires postgresql:// instead of postgres://
-        if db_url.startswith("postgres://"):
-            db_url = db_url.replace("postgres://", "postgresql://", 1)
-            
-        connect_args = {}
-        if db_url.startswith("sqlite"):
-            connect_args["check_same_thread"] = False
-            
-        self.engine = create_engine(db_url, connect_args=connect_args)
-        self.metadata = MetaData()
+        self.engine = engine
+        self.metadata = metadata
         
         self.jobs_table = Table(
             "jobs",
@@ -74,14 +64,11 @@ class JobManager:
             Column("original_request", String),
             Column("created_at", Float),
             Column("updated_at", Float),
+            extend_existing=True,
         )
         
         self._listeners: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
-        self._init_db()
-
-    def _init_db(self) -> None:
-        """Create the schema if it doesn't exist."""
-        self.metadata.create_all(self.engine)
+        init_db()
 
     def _row_to_job(self, row: Any) -> SimulationJob:
         return SimulationJob(

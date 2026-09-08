@@ -179,3 +179,28 @@ export async function simulateContractGraph(payload, config = {}) {
 export async function generateGuidedTermLife(payload, config = {}) {
   return await httpClient.post('/contracts/guided/term-life', payload, config)
 }
+
+// ────────────────────────────────────────────────────────────
+// Assumption Management
+// ────────────────────────────────────────────────────────────
+
+export async function fetchAssumptions(type = null) {
+  const params = type ? { type } : {}
+  return await httpClient.get('/assumptions', { params })
+}
+
+export async function fetchAssumptionHistory(id) {
+  return await httpClient.get(`/assumptions/${id}/history`)
+}
+
+export async function createAssumption(payload) {
+  return await httpClient.post('/assumptions', payload)
+}
+
+export async function createAssumptionVersion(id, payload) {
+  return await httpClient.post(`/assumptions/${id}/version`, payload)
+}
+
+export async function updateAssumptionStatus(id, status) {
+  return await httpClient.put(`/assumptions/${id}/status`, { status })
+}

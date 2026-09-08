@@ -3,6 +3,7 @@ import MainDashboard from '../views/MainDashboard.vue'
 import TermsOfService from '../views/TermsOfService.vue'
 import PrivacyPolicy from '../views/PrivacyPolicy.vue'
 import GuidedModeView from '../views/GuidedModeView.vue'
+import AssumptionLibraryView from '../views/AssumptionLibraryView.vue'
 
 const routes = [
   {
@@ -14,6 +15,11 @@ const routes = [
     path: '/guided',
     name: 'GuidedMode',
     component: GuidedModeView,
+  },
+  {
+    path: '/assumptions',
+    name: 'Assumptions',
+    component: AssumptionLibraryView,
   },
   {
     path: '/terms',
