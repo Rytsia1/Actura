@@ -10,6 +10,14 @@
         <span v-if="loading">Refreshing...</span>
         <span v-else>Refresh</span>
       </button>
+      <button
+        class="btn btn-compare"
+        @click="goToCompare"
+      >
+        <span v-if="selectedForCompare.length === 2">Compare Selected (2)</span>
+        <span v-else-if="selectedForCompare.length === 1">Compare (1 Selected)</span>
+        <span v-else>Compare Runs</span>
+      </button>
     </div>
 
     <div v-if="error" class="error-banner">
@@ -20,6 +28,7 @@
       <table class="run-table">
         <thead>
           <tr>
+            <th style="width: 40px; text-align: center;">Select</th>
             <th>Run ID</th>
             <th>Status</th>
             <th>Type</th>
@@ -33,9 +42,19 @@
         </thead>
         <tbody>
           <tr v-if="jobs.length === 0 && !loading">
-            <td colspan="9" class="empty-state">No valuation runs found.</td>
+            <td colspan="10" class="empty-state">No valuation runs found.</td>
           </tr>
           <tr v-for="job in jobs" :key="job.job_id">
+            <td style="text-align: center;">
+              <input
+                type="checkbox"
+                :checked="selectedForCompare.includes(job.job_id)"
+                @change="toggleSelect(job.job_id)"
+                class="compare-checkbox"
+                :disabled="job.status !== 'COMPLETED'"
+                title="Select run for side-by-side comparison"
+              />
+            </td>
             <td class="font-mono text-sm" :title="job.job_id">{{ shortenId(job.job_id) }}</td>
             <td>
               <span :class="['status-badge', job.status.toLowerCase()]">{{ job.status }}</span>
@@ -53,8 +72,16 @@
               </div>
               <span class="progress-text">{{ job.progress.toFixed(0) }}%</span>
             </td>
-            <td>
-              <button class="btn btn-sm btn-outline" @click="viewDetails(job)">View Details</button>
+            <td style="white-space: nowrap;">
+              <button class="btn btn-sm btn-outline" @click="viewDetails(job)">Details</button>
+              <button
+                class="btn btn-sm btn-outline-compare"
+                style="margin-left: 0.5rem;"
+                @click="compareSingleRun(job.job_id)"
+                :disabled="job.status !== 'COMPLETED'"
+              >
+                Compare
+              </button>
             </td>
           </tr>
         </tbody>
@@ -66,7 +93,16 @@
       <div class="modal-content">
         <div class="modal-header">
           <h3>Run Details</h3>
-          <button class="btn-close" @click="selectedJob = null">&times;</button>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <button
+              class="btn btn-sm btn-compare"
+              @click="compareSingleRun(selectedJob.job_id)"
+              :disabled="selectedJob.status !== 'COMPLETED'"
+            >
+              Compare This Run
+            </button>
+            <button class="btn-close" @click="selectedJob = null">&times;</button>
+          </div>
         </div>
         <div class="modal-body">
           <div class="detail-grid">
@@ -127,14 +163,55 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchJobs } from '../services/actuaryApi'
 
+const router = useRouter()
 const jobs = ref([])
 const loading = ref(false)
 const error = ref(null)
 const selectedJob = ref(null)
+const selectedForCompare = ref([])
 
 let pollInterval = null
+
+const toggleSelect = (jobId) => {
+  if (selectedForCompare.value.includes(jobId)) {
+    selectedForCompare.value = selectedForCompare.value.filter((id) => id !== jobId)
+  } else {
+    if (selectedForCompare.value.length >= 2) {
+      selectedForCompare.value = [selectedForCompare.value[1], jobId]
+    } else {
+      selectedForCompare.value.push(jobId)
+    }
+  }
+}
+
+const compareSingleRun = (jobId) => {
+  router.push({
+    path: '/compare',
+    query: { runA: jobId },
+  })
+}
+
+const goToCompare = () => {
+  if (selectedForCompare.value.length === 2) {
+    router.push({
+      path: '/compare',
+      query: {
+        runA: selectedForCompare.value[0],
+        runB: selectedForCompare.value[1],
+      },
+    })
+  } else if (selectedForCompare.value.length === 1) {
+    router.push({
+      path: '/compare',
+      query: { runA: selectedForCompare.value[0] },
+    })
+  } else {
+    router.push('/compare')
+  }
+}
 
 const loadJobs = async () => {
   loading.value = true
@@ -461,5 +538,48 @@ const viewDetails = (job) => {
   white-space: pre-wrap;
   font-family: 'Fira Code', monospace;
   font-size: 0.875rem;
+}
+
+.btn-compare {
+  background-color: #6366f1;
+  color: white;
+  margin-left: 0.75rem;
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-compare:hover {
+  background-color: #4f46e5;
+}
+
+.btn-outline-compare {
+  border: 1px solid #6366f1;
+  color: #818cf8;
+  background: transparent;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-outline-compare:hover:not(:disabled) {
+  background-color: rgba(99, 102, 241, 0.1);
+}
+
+.btn-outline-compare:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.compare-checkbox {
+  cursor: pointer;
+  accent-color: #6366f1;
+  width: 16px;
+  height: 16px;
 }
 </style>

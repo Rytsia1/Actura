@@ -305,3 +305,12 @@ export async function fetchSensitivityResult(id) {
   return await httpClient.get(`/sensitivity/${id}`)
 }
 
+export async function fetchComparableRuns(params = {}) {
+  return await httpClient.get('/runs/comparable', { params })
+}
+
+export async function compareRuns(payload, config = {}) {
+  return await httpClient.post('/runs/compare', payload, config)
+}
+
+

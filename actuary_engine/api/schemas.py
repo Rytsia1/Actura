@@ -296,6 +296,62 @@ class SensitivityAnalysisResponse(BaseModel):
     reproducibility: dict[str, Any] = Field(default_factory=dict)
 
 
+# ────────────────────────────────────────────────────────────
+# Run Comparison Schemas (Task 11)
+# ────────────────────────────────────────────────────────────
+
+class RunComparisonRequest(BaseModel):
+    """Request to compare two valuation runs."""
+    run_a_id: str = Field(..., description="Job ID of the baseline run (Run A).")
+    run_b_id: str = Field(..., description="Job ID of the comparison run (Run B).")
+
+
+class MetricComparisonItem(BaseModel):
+    """Comparative valuation metric row showing Run A, Run B, and deltas."""
+    metric_key: str
+    metric_label: str
+    category: str = "liability"  # liability, cash_flow, risk, profitability
+    value_a: Optional[float] = None
+    value_b: Optional[float] = None
+    absolute_delta: Optional[float] = None
+    percentage_delta: Optional[float] = None
+    unit: str = "$"
+
+
+class ConfigComparisonItem(BaseModel):
+    """Comparative configuration parameter showing Run A, Run B, and change status."""
+    element_key: str
+    label: str
+    value_a: Any
+    value_b: Any
+    has_changed: bool
+    change_summary: str
+
+
+class RunSummaryInfo(BaseModel):
+    """High-level summary of a valuation run for comparison header."""
+    job_id: str
+    valuation_type: str
+    status: str
+    created_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    duration_seconds: Optional[float] = None
+    model_name: Optional[str] = None
+    scenario_name: Optional[str] = None
+    engine_version: Optional[str] = None
+
+
+class RunComparisonResponse(BaseModel):
+    """Complete comparison payload between two valuation runs."""
+    run_a: RunSummaryInfo
+    run_b: RunSummaryInfo
+    metrics: list[MetricComparisonItem] = Field(default_factory=list)
+    configurations: list[ConfigComparisonItem] = Field(default_factory=list)
+    changed_elements: list[str] = Field(default_factory=list)
+    summary_explanation: str
+
+
+
 
 
 # ────────────────────────────────────────────────────────────

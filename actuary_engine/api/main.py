@@ -78,11 +78,14 @@ from actuary_engine.api.schemas import (
     SensitivityAnalysisRequest,
     SensitivityAnalysisResponse,
     SensitivityShockConfig,
+    RunComparisonRequest,
+    RunComparisonResponse,
 )
 from actuary_engine.infrastructure.assumption_repo import assumption_repo
 from actuary_engine.infrastructure.scenario_repo import scenario_repo
 from actuary_engine.services.scenario_service import scenario_service
 from actuary_engine.services.sensitivity_service import sensitivity_service
+from actuary_engine.services.run_comparison_service import run_comparison_service
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
@@ -1483,6 +1486,31 @@ def get_sensitivity_result(id: str):
             "status": row._mapping["status"],
             "run_metadata": json.loads(row._mapping["run_metadata"]) if isinstance(row._mapping["run_metadata"], str) else row._mapping["run_metadata"],
         }
+
+
+# ────────────────────────────────────────────────────────────
+# Run Comparison Endpoints (Task 11)
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/runs/comparable")
+def list_comparable_runs(limit: int = 50):
+    """Retrieve completed valuation runs available for side-by-side comparison."""
+    return run_comparison_service.get_comparable_runs(limit=limit)
+
+
+@app.post("/api/v1/runs/compare", response_model=RunComparisonResponse)
+def compare_valuation_runs(request: RunComparisonRequest):
+    """Compare Run A and Run B, calculate absolute and percentage deltas, and explain differences."""
+    try:
+        return run_comparison_service.compare_runs(request.run_a_id, request.run_b_id)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception as e:
+        logger.exception("Run comparison failed")
+        raise HTTPException(status_code=500, detail=f"Run comparison failed: {e}")
 
 
 @app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse)
