@@ -5,6 +5,7 @@ import PrivacyPolicy from '../views/PrivacyPolicy.vue'
 import GuidedModeView from '../views/GuidedModeView.vue'
 import AssumptionLibraryView from '../views/AssumptionLibraryView.vue'
 import ScenarioManagementView from '../views/ScenarioManagementView.vue'
+import SensitivityAnalysisView from '../views/SensitivityAnalysisView.vue'
 
 const routes = [
   {
@@ -26,6 +27,11 @@ const routes = [
     path: '/scenarios',
     name: 'Scenarios',
     component: ScenarioManagementView,
+  },
+  {
+    path: '/sensitivity',
+    name: 'Sensitivity',
+    component: SensitivityAnalysisView,
   },
   {
     path: '/history',

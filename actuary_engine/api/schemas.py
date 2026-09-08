@@ -5,7 +5,7 @@ Pydantic Request and Response schemas for the Actuarial Valuation API.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
 from actuary_engine.models.assumptions import ExpenseAssumption, LapseAssumption
@@ -203,6 +203,8 @@ class ScenarioExecutionResponse(BaseModel):
     baseline_bel: Optional[float] = None
     delta_bel: Optional[float] = None
     pct_change_bel: Optional[float] = None
+    csm: Optional[float] = None
+    profit_loss: Optional[float] = None
     annual_net_premium: float
     annual_gross_premium: float
     nsp: float
@@ -210,6 +212,89 @@ class ScenarioExecutionResponse(BaseModel):
     reserve_profile: list[dict[str, Any]] = Field(default_factory=list)
     cash_flows: list[dict[str, Any]] = Field(default_factory=list)
     reproducibility: dict[str, Any] = Field(default_factory=dict)
+
+
+# ────────────────────────────────────────────────────────────
+# First-Class Sensitivity Analysis Schemas (Task 10)
+# ────────────────────────────────────────────────────────────
+
+class SensitivityShockConfig(BaseModel):
+    """Configurable shock ranges across supported actuarial risk factors."""
+    mortality_shocks: Optional[list[float]] = Field(
+        default=None,
+        description="Relative shifts for mortality (e.g., [-0.20, -0.10, 0.0, 0.10, 0.20]).",
+    )
+    interest_shocks_bps: Optional[list[float]] = Field(
+        default=None,
+        description="Basis point shifts for discount rate (e.g., [-200, -100, 0, 100, 200]).",
+    )
+    lapse_shocks: Optional[list[float]] = Field(
+        default=None,
+        description="Relative shifts for lapse decrements (e.g., [-0.20, -0.10, 0.0, 0.10, 0.20]).",
+    )
+    expense_shocks: Optional[list[float]] = Field(
+        default=None,
+        description="Relative shifts for expense parameters (e.g., [-0.20, -0.10, 0.0, 0.10, 0.20]).",
+    )
+
+
+class SensitivityAnalysisRequest(BaseModel):
+    """Request payload for running first-class sensitivity analysis against a base model."""
+    base_model_id: str = Field(default="default-endowment", description="Base model to analyze.")
+    target_metric: Literal["bel", "csm", "profit_loss"] = Field(
+        default="bel",
+        description="Target valuation metric to analyze and rank drivers for.",
+    )
+    shocks: Optional[SensitivityShockConfig] = Field(
+        default=None,
+        description="Configurable shock ranges. Uses actuarial standard defaults if omitted.",
+    )
+
+
+class SensitivityGridPoint(BaseModel):
+    """Single evaluated shock point in the sensitivity grid."""
+    variable: str = Field(..., description="Assumption variable (mortality, discount_rate, lapse, expense).")
+    variable_label: str = Field(..., description="Human-readable variable label.")
+    shock_label: str = Field(..., description="Formatted shock label (e.g. '+10%', '-100 bps', 'Base').")
+    shock_value: float = Field(..., description="Numeric shock magnitude.")
+    resulting_metric: float = Field(..., description="Resulting value for target_metric.")
+    absolute_change: float = Field(..., description="Absolute delta (Metric_shocked - Metric_base).")
+    percentage_change: float = Field(..., description="Percentage shift relative to base metric.")
+    bel: float = Field(..., description="Best Estimate Liability under this shock.")
+    csm: float = Field(..., description="Contractual Service Margin under this shock.")
+    profit_loss: float = Field(..., description="PV of underwriting profit under this shock.")
+
+
+class SensitivityDriverItem(BaseModel):
+    """Valuation driver summary ranking assumptions by absolute impact."""
+    rank: int = Field(..., description="Impact rank (1 = highest driver).")
+    variable: str = Field(..., description="Assumption variable key.")
+    variable_label: str = Field(..., description="Human-readable assumption name.")
+    swing: float = Field(..., description="Max swing: max(metric) - min(metric).")
+    swing_pct: float = Field(..., description="Swing as percentage of base metric value.")
+    max_abs_change: float = Field(..., description="Maximum absolute shift from baseline.")
+    min_metric: float = Field(..., description="Lowest metric value across tested shocks.")
+    max_metric: float = Field(..., description="Highest metric value across tested shocks.")
+    most_adverse_shock: str = Field(..., description="Shock causing the most adverse valuation outcome.")
+    most_favorable_shock: str = Field(..., description="Shock causing the most favorable valuation outcome.")
+
+
+class SensitivityAnalysisResponse(BaseModel):
+    """Complete response payload for first-class sensitivity analysis."""
+    analysis_id: str
+    base_model_id: str
+    base_model_name: str
+    target_metric: str
+    base_metric_value: float
+    base_bel: float
+    base_csm: float
+    base_profit_loss: float
+    drivers: list[SensitivityDriverItem] = Field(default_factory=list)
+    grid_points: list[SensitivityGridPoint] = Field(default_factory=list)
+    job_id: str
+    created_at: float
+    reproducibility: dict[str, Any] = Field(default_factory=dict)
+
 
 
 

@@ -293,3 +293,15 @@ export async function deleteScenario(id) {
   return await httpClient.delete(`/scenarios/${id}`)
 }
 
+export async function fetchSensitivityDefaults() {
+  return await httpClient.get('/sensitivity/defaults')
+}
+
+export async function runSensitivityAnalysisV2(payload, config = {}) {
+  return await httpClient.post('/sensitivity/analyze', payload, config)
+}
+
+export async function fetchSensitivityResult(id) {
+  return await httpClient.get(`/sensitivity/${id}`)
+}
+

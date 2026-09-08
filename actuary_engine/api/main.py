@@ -75,10 +75,14 @@ from actuary_engine.api.schemas import (
     BaseModelRead,
     ScenarioValidationResult,
     ScenarioExecutionResponse,
+    SensitivityAnalysisRequest,
+    SensitivityAnalysisResponse,
+    SensitivityShockConfig,
 )
 from actuary_engine.infrastructure.assumption_repo import assumption_repo
 from actuary_engine.infrastructure.scenario_repo import scenario_repo
 from actuary_engine.services.scenario_service import scenario_service
+from actuary_engine.services.sensitivity_service import sensitivity_service
 from actuary_engine.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
@@ -1420,6 +1424,65 @@ def delete_scenario(id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
     return {"status": "deleted", "id": id}
+
+
+# ────────────────────────────────────────────────────────────
+# First-Class Sensitivity Analysis Endpoints (Task 10)
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/sensitivity/defaults")
+def get_sensitivity_defaults():
+    """Return default sensitivity analysis shock grid specifications."""
+    return sensitivity_service.get_default_shocks()
+
+
+@app.post("/api/v1/sensitivity/analyze", response_model=SensitivityAnalysisResponse)
+def analyze_sensitivity(request: SensitivityAnalysisRequest):
+    """Run first-class sensitivity analysis across mortality, discount rate, lapse, and expense.
+
+    Reuses Scenario Management without duplicate engines. Computes BEL, CSM, and profit/loss.
+    Ranks assumptions into Top Valuation Drivers. Persists run in job history.
+    """
+    try:
+        return sensitivity_service.run_sensitivity_analysis(request)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+    except Exception as e:
+        logger.exception("Sensitivity analysis failed")
+        raise HTTPException(status_code=500, detail=f"Sensitivity analysis failed: {e}")
+
+
+@app.get("/api/v1/sensitivity/{id}")
+def get_sensitivity_result(id: str):
+    """Retrieve persisted sensitivity analysis results from job history."""
+    from sqlalchemy import select
+    with job_manager.engine.begin() as conn:
+        stmt = select(job_manager.jobs_table).where(
+            (job_manager.jobs_table.c.job_id == id)
+        )
+        row = conn.execute(stmt).fetchone()
+        if not row:
+            stmt_all = select(job_manager.jobs_table).where(
+                job_manager.jobs_table.c.run_metadata.like(f"%{id}%")
+            )
+            row = conn.execute(stmt_all).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Sensitivity analysis '{id}' not found.")
+
+        result_raw = row._mapping["result"]
+        if result_raw:
+            if isinstance(result_raw, str):
+                return json.loads(result_raw)
+            return result_raw
+        return {
+            "job_id": row._mapping["job_id"],
+            "status": row._mapping["status"],
+            "run_metadata": json.loads(row._mapping["run_metadata"]) if isinstance(row._mapping["run_metadata"], str) else row._mapping["run_metadata"],
+        }
 
 
 @app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse)

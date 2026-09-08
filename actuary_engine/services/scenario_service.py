@@ -24,6 +24,7 @@ from actuary_engine.models.contracts import PolicyContract, ProductType
 from actuary_engine.tables.commutation import CommutationFunctions
 from actuary_engine.pricing.premium import LevelPremiumCalculator
 from actuary_engine.valuation.gpv import GrossPremiumValuation
+from actuary_engine.valuation.ifrs17 import IFRS17Engine
 from actuary_engine.api.schemas import (
     ScenarioValidationResult,
     ScenarioExecutionResponse,
@@ -80,26 +81,10 @@ class ScenarioService:
             "expense_multiplier": eff_exp_mult,
         }
 
-    def validate_scenario(self, scenario_id: str) -> ScenarioValidationResult:
-        """Actuarially validate a scenario's overrides against its referenced base model."""
-        scenario = self.repo.get_scenario(scenario_id)
-        if not scenario:
-            return ScenarioValidationResult(
-                scenario_id=scenario_id,
-                is_valid=False,
-                errors=[f"Scenario '{scenario_id}' not found."],
-            )
-
-        base_model_id = scenario["base_model_id"]
-        base_model = self.repo.get_base_model(base_model_id)
-        if not base_model:
-            return ScenarioValidationResult(
-                scenario_id=scenario_id,
-                is_valid=False,
-                errors=[f"Referenced base model '{base_model_id}' does not exist."],
-            )
-
-        overrides = scenario.get("overrides", {})
+    def validate_overrides(
+        self, base_model: dict[str, Any], overrides: dict[str, Any]
+    ) -> tuple[bool, list[str], list[str], dict[str, Any]]:
+        """Validate assumption overrides against a base model according to actuarial domain guardrails."""
         errors: list[str] = []
         warnings: list[str] = []
 
@@ -140,30 +125,49 @@ class ScenarioService:
         if exp_mult < 0.0:
             errors.append(f"Effective expense multiplier ({exp_mult:.2f}) cannot be negative.")
 
+        return len(errors) == 0, errors, warnings, eff
+
+    def validate_scenario(self, scenario_id: str) -> ScenarioValidationResult:
+        """Actuarially validate a scenario's overrides against its referenced base model."""
+        scenario = self.repo.get_scenario(scenario_id)
+        if not scenario:
+            return ScenarioValidationResult(
+                scenario_id=scenario_id,
+                is_valid=False,
+                errors=[f"Scenario '{scenario_id}' not found."],
+            )
+
+        base_model_id = scenario["base_model_id"]
+        base_model = self.repo.get_base_model(base_model_id)
+        if not base_model:
+            return ScenarioValidationResult(
+                scenario_id=scenario_id,
+                is_valid=False,
+                errors=[f"Referenced base model '{base_model_id}' does not exist."],
+            )
+
+        overrides = scenario.get("overrides", {})
+        is_valid, errors, warnings, eff = self.validate_overrides(base_model, overrides)
+
         return ScenarioValidationResult(
             scenario_id=scenario_id,
-            is_valid=len(errors) == 0,
+            is_valid=is_valid,
             errors=errors,
             warnings=warnings,
             effective_assumptions=eff,
         )
 
-    def execute_scenario(self, scenario_id: str) -> ScenarioExecutionResponse:
-        """Execute a deterministic valuation for a scenario, keeping base model untouched."""
-        scenario = self.repo.get_scenario(scenario_id)
-        if not scenario:
-            raise ValueError(f"Scenario '{scenario_id}' not found.")
+    def evaluate_model_with_overrides(
+        self, base_model: dict[str, Any], overrides: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Execute deterministic valuation with overrides against a base model.
 
-        base_model = self.repo.get_base_model(scenario["base_model_id"])
-        if not base_model:
-            raise ValueError(f"Base model '{scenario['base_model_id']}' not found.")
-
-        val_result = self.validate_scenario(scenario_id)
-        if not val_result.is_valid:
-            raise ValueError(f"Scenario validation failed: {'; '.join(val_result.errors)}")
-
-        overrides = scenario.get("overrides", {})
-        eff = val_result.effective_assumptions
+        Calculates BEL, CSM, profit/loss, reserves, and cash flows.
+        Does NOT mutate base_model.
+        """
+        is_valid, errors, warnings, eff = self.validate_overrides(base_model, overrides)
+        if not is_valid:
+            raise ValueError(f"Assumption validation failed: {'; '.join(errors)}")
 
         # 1. Base Table & Contract
         raw_table = self.table_reg.get_table(eff["table_id"])
@@ -247,12 +251,26 @@ class ScenarioService:
         bel = float(gpv_engine.best_estimate_liability(contract, gross_premium=gross_premium))
         res_df = gpv_engine.gross_reserve_profile(contract, gross_premium=gross_premium)
 
-        # 5. Baseline Evaluation for Comparison
-        baseline_bel = self._compute_baseline_bel(base_model, contract)
-        delta_bel = bel - baseline_bel
-        pct_change = (delta_bel / max(1.0, abs(baseline_bel))) * 100.0
+        # 5. IFRS 17 Evaluation for CSM & Profit
+        ifrs_engine = IFRS17Engine(
+            table=table,
+            interest=interest,
+            expense=expense,
+            lapse=lapse,
+        )
+        ifrs_init = ifrs_engine.evaluate_initial_recognition(contract, gross_premium=gross_premium)
+        csm = float(ifrs_init.csm_0)
 
-        # 6. Format Schedules
+        pv_future_premiums = float(cf_df["pv_premium"].sum())
+        pv_future_outgo = float(
+            cf_df["pv_death_claims"].sum()
+            + cf_df["pv_lapse_payouts"].sum()
+            + cf_df["pv_maturity"].sum()
+            + cf_df["pv_expense"].sum()
+        )
+        profit_loss = float(pv_future_premiums - pv_future_outgo)
+
+        # Format Schedules
         reserve_profile = [
             {
                 "duration": int(r["duration"]),
@@ -276,7 +294,47 @@ class ScenarioService:
             for _, r in cf_df.iterrows()
         ]
 
-        # 7. Reproducibility & Job Persistence
+        return {
+            "bel": bel,
+            "csm": csm,
+            "profit_loss": profit_loss,
+            "net_premium": net_premium,
+            "gross_premium": gross_premium,
+            "nsp": nsp,
+            "annuity_factor": annuity_factor,
+            "effective_assumptions": eff,
+            "reserve_profile": reserve_profile,
+            "cash_flows": cash_flows,
+            "contract": contract,
+            "table": table,
+            "interest": interest,
+            "expense": expense,
+            "lapse": lapse,
+        }
+
+    def execute_scenario(self, scenario_id: str) -> ScenarioExecutionResponse:
+        """Execute a deterministic valuation for a scenario, keeping base model untouched."""
+        scenario = self.repo.get_scenario(scenario_id)
+        if not scenario:
+            raise ValueError(f"Scenario '{scenario_id}' not found.")
+
+        base_model = self.repo.get_base_model(scenario["base_model_id"])
+        if not base_model:
+            raise ValueError(f"Base model '{scenario['base_model_id']}' not found.")
+
+        overrides = scenario.get("overrides", {})
+        eval_res = self.evaluate_model_with_overrides(base_model, overrides)
+        eff = eval_res["effective_assumptions"]
+        bel = eval_res["bel"]
+        csm = eval_res["csm"]
+        profit_loss = eval_res["profit_loss"]
+
+        # Baseline Evaluation for Comparison
+        baseline_bel = self._compute_baseline_bel(base_model, eval_res["contract"])
+        delta_bel = bel - baseline_bel
+        pct_change = (delta_bel / max(1.0, abs(baseline_bel))) * 100.0
+
+        # Reproducibility & Job Persistence
         exec_time = time.time()
         run_meta_dict = {
             "engine_version": "1.0.0",
@@ -291,6 +349,8 @@ class ScenarioService:
             "stressed_bel": round(bel, 2),
             "delta_bel": round(delta_bel, 2),
             "pct_change_bel": round(pct_change, 2),
+            "csm": round(csm, 2),
+            "profit_loss": round(profit_loss, 2),
         }
 
         job = job_manager.create_job(
@@ -314,12 +374,14 @@ class ScenarioService:
             baseline_bel=round(baseline_bel, 2),
             delta_bel=round(delta_bel, 2),
             pct_change_bel=round(pct_change, 2),
-            annual_net_premium=round(net_premium, 2),
-            annual_gross_premium=round(gross_premium, 2),
-            nsp=round(nsp, 2),
-            annuity_factor=round(annuity_factor, 4),
-            reserve_profile=reserve_profile,
-            cash_flows=cash_flows,
+            csm=round(csm, 2),
+            profit_loss=round(profit_loss, 2),
+            annual_net_premium=round(eval_res["net_premium"], 2),
+            annual_gross_premium=round(eval_res["gross_premium"], 2),
+            nsp=round(eval_res["nsp"], 2),
+            annuity_factor=round(eval_res["annuity_factor"], 4),
+            reserve_profile=eval_res["reserve_profile"],
+            cash_flows=eval_res["cash_flows"],
             reproducibility=run_meta_dict,
         )
 

@@ -126,7 +126,7 @@ const navItems = [
   { id: 'overview', label: 'Overview', icon: 'chart' },
   { id: 'builder', label: 'Logic Builder', icon: 'blueprint' },
   { id: 'stochastic', label: 'ESG & Risk', icon: 'risk' },
-  { id: 'sensitivity', label: 'Stress Testing', icon: 'tornado' },
+  { id: 'sensitivity', label: 'Sensitivity Analysis', icon: 'tornado' },
   { id: 'ifrs17', label: 'IFRS 17', icon: 'balance' },
   { id: 'reserves', label: 'Reserves', icon: 'reserve' },
   { id: 'cashflows', label: 'Cash Flows', icon: 'cashflow' },
@@ -157,14 +157,14 @@ function switchTab(tabId) {
     sidebarOpen.value = false
     return
   }
+  if (tabId === 'sensitivity') {
+    router.push('/sensitivity')
+    sidebarOpen.value = false
+    return
+  }
   activeTab.value = tabId
   sidebarOpen.value = false
   checkAndLazyLoadTab(tabId)
-  if (tabId === 'sensitivity') {
-    nextTick(() => {
-      sensitivityDashboardRef.value?.resizeCharts?.()
-    })
-  }
 }
 
 // ────────────────────────────────────────────────────────────
