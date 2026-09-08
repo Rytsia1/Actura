@@ -19,6 +19,7 @@ import {
   Trash2,
   X,
   Layers,
+  Search,
 } from 'lucide-vue-next'
 
 import '@vue-flow/core/dist/style.css'
@@ -58,6 +59,8 @@ const isSimulating = ref(false)
 const simulationResult = shallowRef(null)
 const simulationError = ref(null)
 const showResultsDrawer = ref(false)
+const selectedTrace = ref(null)
+const isTraceDrawerOpen = ref(false)
 
 const { project, fitView, addNodes, onConnect, addEdges } = useVueFlow()
 
@@ -362,6 +365,42 @@ function renderResultCharts() {
 }
 
 // ────────────────────────────────────────────────────────────
+// Provenance Tracing Layer
+// ────────────────────────────────────────────────────────────
+function openTrace(metricKey) {
+  if (!simulationResult.value?.provenance || !simulationResult.value.provenance[metricKey]) {
+    return
+  }
+  selectedTrace.value = simulationResult.value.provenance[metricKey]
+  isTraceDrawerOpen.value = true
+}
+
+function highlightSourceNodes() {
+  if (!selectedTrace.value || !selectedTrace.value.source_nodes) return
+  const sourceIds = selectedTrace.value.source_nodes
+  
+  // Highlight nodes in vue-flow
+  nodes.value = nodes.value.map(n => ({
+    ...n,
+    class: sourceIds.includes(n.id) 
+      ? 'ring-4 ring-amber-500 ring-offset-4 ring-offset-[#0B0F19] shadow-[0_0_30px_rgba(245,158,11,0.5)] z-50 scale-105 transition-all duration-300' 
+      : 'opacity-40 transition-all duration-300'
+  }))
+  
+  // Close drawers and fit view
+  isTraceDrawerOpen.value = false
+  showResultsDrawer.value = false
+  setTimeout(() => {
+    fitView({ nodes: sourceIds, padding: 0.5, duration: 600 })
+  }, 100)
+}
+
+function clearHighlight() {
+  nodes.value = nodes.value.map(n => ({ ...n, class: '' }))
+  fitView({ padding: 0.2, duration: 400 })
+}
+
+// ────────────────────────────────────────────────────────────
 // Lifecycle
 // ────────────────────────────────────────────────────────────
 onMounted(() => {
@@ -430,6 +469,14 @@ onUnmounted(() => {
         >
           <Layout class="h-3.5 w-3.5 text-slate-400" />
           <span class="hidden sm:inline">Auto-Layout</span>
+        </button>
+
+        <button
+          v-if="nodes.some(n => n.class?.includes('ring-amber-500'))"
+          @click="clearHighlight"
+          class="btn-secondary text-xs px-3 py-1.5 flex items-center space-x-1.5 text-amber-400 hover:text-amber-300 border-amber-500/30 rounded-md"
+        >
+          <span>Clear Trace</span>
         </button>
 
         <button
@@ -556,7 +603,12 @@ onUnmounted(() => {
         <!-- KPI Strip -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div class="card p-3.5">
-            <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Best Estimate Liability (BEL)</div>
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Best Estimate Liability (BEL)</div>
+              <button v-if="simulationResult.provenance?.total_bel" @click="openTrace('total_bel')" class="flex items-center space-x-1 text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/20 transition-colors">
+                <Search class="w-3 h-3" /> <span>Trace</span>
+              </button>
+            </div>
             <div class="text-xl font-semibold text-sky-400 mt-1 font-mono">
               {{ formatCurrency(simulationResult.total_bel) }}
             </div>
@@ -564,7 +616,12 @@ onUnmounted(() => {
           </div>
 
           <div class="card p-3.5">
-            <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Equivalence Gross Premium</div>
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Equivalence Gross Premium</div>
+              <button v-if="simulationResult.provenance?.annual_premium" @click="openTrace('annual_premium')" class="flex items-center space-x-1 text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/20 transition-colors">
+                <Search class="w-3 h-3" /> <span>Trace</span>
+              </button>
+            </div>
             <div class="text-xl font-semibold text-emerald-400 mt-1 font-mono">
               {{ formatCurrency(simulationResult.annual_premium) }} / yr
             </div>
@@ -641,6 +698,70 @@ onUnmounted(() => {
           </div>
         </div>
 
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 4. PROVENANCE TRACE MODAL                               -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <div v-if="isTraceDrawerOpen && selectedTrace" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div class="bg-[#0F172A] border border-white/[0.1] shadow-2xl rounded-xl w-full max-w-2xl flex flex-col overflow-hidden">
+        <div class="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between bg-[#182234]">
+          <div class="flex items-center space-x-2.5">
+            <Search class="w-4 h-4 text-amber-400" />
+            <h3 class="text-sm font-semibold text-white">Calculation Provenance: {{ selectedTrace.metric_name }}</h3>
+          </div>
+          <button @click="isTraceDrawerOpen = false" class="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+        
+        <div class="p-6 space-y-6">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Computed Value</div>
+              <div class="text-2xl font-semibold text-amber-400 mt-1 font-mono">{{ formatCurrency(selectedTrace.value) }}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Calculation Stage</div>
+              <div class="text-sm font-medium text-slate-300 mt-1">{{ selectedTrace.calculation_stage }}</div>
+            </div>
+          </div>
+          
+          <div class="card p-4 space-y-2 border-amber-500/20 bg-amber-500/5">
+            <h4 class="text-xs font-medium text-slate-300">Actuarial Narrative</h4>
+            <p class="text-sm text-slate-400 leading-relaxed">{{ selectedTrace.calculation_description }}</p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div class="card p-4 space-y-3">
+              <h4 class="text-xs font-medium text-slate-300">Contributing Components</h4>
+              <ul class="space-y-1.5">
+                <li v-for="comp in selectedTrace.contributing_components" :key="comp" class="flex items-center space-x-2 text-xs text-slate-400">
+                  <span class="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
+                  <span>{{ comp }}</span>
+                </li>
+              </ul>
+            </div>
+            <div class="card p-4 space-y-3">
+              <h4 class="text-xs font-medium text-slate-300">Relevant Assumptions</h4>
+              <ul class="space-y-1.5">
+                <li v-for="(val, key) in selectedTrace.relevant_assumptions" :key="key" class="flex items-center justify-between text-xs text-slate-400 border-b border-white/[0.04] pb-1 last:border-0 last:pb-0">
+                  <span>{{ key }}</span>
+                  <span class="font-mono text-slate-300">{{ val }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        
+        <div class="px-5 py-4 border-t border-white/[0.06] bg-[#182234] flex items-center justify-end space-x-3">
+          <button @click="isTraceDrawerOpen = false" class="btn-secondary text-xs px-4 py-1.5 rounded-md">Close</button>
+          <button @click="highlightSourceNodes" class="btn-primary text-xs px-4 py-1.5 rounded-md flex items-center space-x-2 border-amber-500/50 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 hover:text-amber-300">
+            <Target class="w-3.5 h-3.5" />
+            <span>Highlight Blueprint Nodes</span>
+          </button>
+        </div>
       </div>
     </div>
 

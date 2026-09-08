@@ -881,6 +881,17 @@ class ContractGraphPayload(BaseModel):
     discount_rate: Optional[float] = Field(default=0.05, ge=0.0, le=0.50, description="Valuation discount rate.")
 
 
+class ProvenanceTrace(BaseModel):
+    """Domain-level explanation tracking calculation lineage from result to blueprint nodes."""
+    metric_name: str = Field(description="Name of the metric being explained.")
+    value: float = Field(description="Final computed value.")
+    contributing_components: list[str] = Field(default_factory=list, description="Cash flow or calculation components contributing to this value.")
+    relevant_assumptions: dict[str, str] = Field(default_factory=dict, description="Key assumptions driving the calculation.")
+    source_nodes: list[str] = Field(default_factory=list, description="IDs of blueprint nodes contributing to this calculation.")
+    calculation_stage: str = Field(description="High-level valuation stage (e.g. 'Present Value Aggregation').")
+    calculation_description: str = Field(description="Actuary-friendly narrative explaining the result.")
+
+
 class SimulateGraphResponse(BaseModel):
     """Projection output and cash flow waterfall returned by the graph simulator."""
 
@@ -903,6 +914,7 @@ class SimulateGraphResponse(BaseModel):
     discounted_net_cf: list[float]
     reserves: list[float]
     breakdown: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, ProvenanceTrace] = Field(default_factory=dict, description="Deterministic calculation provenance traces mapping metrics back to source nodes.")
 
 
 
