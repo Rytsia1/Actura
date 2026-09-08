@@ -742,6 +742,7 @@ onUnmounted(() => {
         <p class="text-sm text-slate-500 mt-1">Actuarial valuation, risk analytics, and regulatory reporting</p>
 
         <div class="mt-4 flex flex-wrap gap-2">
+          <button @click="$router.push('/guided')" class="btn-primary text-[12px] px-3 py-1.5 rounded-md bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-400 hover:to-indigo-400 border-none">✨ Guided Workflow</button>
           <button @click="applyPreset('endowment_20')" class="btn-secondary text-[12px] px-3 py-1.5 rounded-md">20-Yr Endowment</button>
           <button @click="applyPreset('term_30')" class="btn-secondary text-[12px] px-3 py-1.5 rounded-md">30-Yr Term</button>
           <button @click="applyPreset('large_scale_10k')" class="btn-secondary text-[12px] px-3 py-1.5 rounded-md">10K Monte Carlo</button>

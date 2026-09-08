@@ -67,6 +67,10 @@ let cashFlowChart = null
 let reserveChart = null
 let resizeObserver = null
 
+import { useValuationStore } from '../stores/useValuationStore'
+
+const valuationStore = useValuationStore()
+
 // ────────────────────────────────────────────────────────────
 // Preset Template Loader
 // ────────────────────────────────────────────────────────────
@@ -91,6 +95,33 @@ function loadPreset(presetKey) {
     fitView({ padding: 0.2, duration: 400 })
   })
 }
+
+function loadCustomPayload(payload) {
+  selectedPresetId.value = 'custom_generated'
+  simulationError.value = null
+
+  const rawNodes = JSON.parse(JSON.stringify(payload.nodes))
+  const rawEdges = JSON.parse(JSON.stringify(payload.edges))
+
+  const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(rawNodes, rawEdges, 'LR')
+
+  nodes.value = layoutedNodes
+  edges.value = layoutedEdges
+
+  nextTick(() => {
+    fitView({ padding: 0.2, duration: 400 })
+  })
+}
+
+onMounted(() => {
+  if (valuationStore.customBlueprintPayload) {
+    loadCustomPayload(valuationStore.customBlueprintPayload)
+    // Clear it so it doesn't persist forever
+    valuationStore.setCustomBlueprintPayload(null)
+  } else {
+    loadPreset(selectedPresetId.value)
+  }
+})
 
 function handleAutoLayout() {
   const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(nodes.value, edges.value, 'LR')

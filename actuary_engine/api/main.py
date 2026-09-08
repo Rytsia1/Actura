@@ -53,6 +53,9 @@ from actuary_engine.api.schemas import (
     StressTestRequest,
     StressTestResponse,
     ContractGraphPayload,
+    GuidedTermLifeRequest,
+    GraphNodeData,
+    GraphEdgeData,
     SimulateGraphResponse,
     TableListItem,
     TableUploadResponse,
@@ -1249,5 +1252,98 @@ def simulate_contract_graph(payload: ContractGraphPayload) -> SimulateGraphRespo
         raise HTTPException(status_code=500, detail=f"Graph simulation error: {e}") from e
 
 
+@app.post("/api/v1/contracts/guided/term-life", response_model=ContractGraphPayload)
+def generate_guided_term_life(request: GuidedTermLifeRequest) -> ContractGraphPayload:
+    """Generate a valid Term Life Insurance blueprint graph from guided parameters."""
+    # Build nodes
+    nodes = [
+        GraphNodeData(
+            id="node-policy-input",
+            type="policyInput",
+            data={
+                "product_name": f"{request.term}-Year Term Life",
+                "age": request.issue_age,
+                "term": request.term,
+                "sum_assured": request.sum_assured,
+                "premium_freq": request.premium_freq,
+                "interest_rate": request.interest_rate,
+                "table_id": request.table_id,
+            }
+        ),
+        GraphNodeData(
+            id="node-inflow-premium",
+            type="inflow",
+            data={
+                "inflow_type": "Gross Premium",
+                "mode": "formula",
+                "amount": 0,
+                "frequency": request.premium_freq,
+            }
+        ),
+        GraphNodeData(
+            id="node-contingency-mortality",
+            type="contingency",
+            data={
+                "decrement_type": "Mortality",
+                "table_id": request.table_id,
+                "multiplier": 1.0,
+                "lapse_rate": request.lapse_rate or 0.0,
+            }
+        ),
+        GraphNodeData(
+            id="node-outflow-death",
+            type="outflow",
+            data={
+                "benefit_type": "Death Benefit",
+                "formula": "1.0 * SA",
+                "factor": 1.0,
+            }
+        ),
+        GraphNodeData(
+            id="node-valuation-sink",
+            type="valuationSink",
+            data={
+                "label": "Valuation Consolidator",
+            }
+        )
+    ]
 
+    edges = [
+        GraphEdgeData(source="node-policy-input", target="node-inflow-premium", sourceHandle="policy_meta", targetHandle="inflow_in"),
+        GraphEdgeData(source="node-policy-input", target="node-contingency-mortality", sourceHandle="policy_meta", targetHandle="contingency_in"),
+        GraphEdgeData(source="node-contingency-mortality", target="node-outflow-death", sourceHandle="on_death", targetHandle="outflow_in"),
+        GraphEdgeData(source="node-inflow-premium", target="node-valuation-sink", sourceHandle="cash_inflow", targetHandle="sink_inflow"),
+        GraphEdgeData(source="node-outflow-death", target="node-valuation-sink", sourceHandle="cash_outflow", targetHandle="sink_outflow"),
+    ]
 
+    if request.expense_first_year_pct is not None and request.expense_renewal_pct is not None:
+        nodes.append(
+            GraphNodeData(
+                id="node-outflow-expense",
+                type="outflow",
+                data={
+                    "benefit_type": "Expense Loadings",
+                    "formula": f"{int(request.expense_first_year_pct*100)}% Y1 / {int(request.expense_renewal_pct*100)}% Ren",
+                    "first_year_pct": request.expense_first_year_pct,
+                    "renewal_pct": request.expense_renewal_pct,
+                }
+            )
+        )
+        edges.append(GraphEdgeData(source="node-inflow-premium", target="node-outflow-expense", sourceHandle="cash_inflow", targetHandle="outflow_in"))
+        edges.append(GraphEdgeData(source="node-outflow-expense", target="node-valuation-sink", sourceHandle="cash_outflow", targetHandle="sink_outflow"))
+
+    payload = ContractGraphPayload(
+        contract_id="guided_term_life",
+        nodes=nodes,
+        edges=edges,
+        discount_rate=request.interest_rate
+    )
+    
+    # Validate
+    validator = BlueprintValidator(table_lookup=table_registry)
+    val_result = validator.validate(payload)
+    if not val_result.is_valid:
+        error_msgs = [i.message for i in val_result.issues if i.severity == ValidationSeverity.ERROR]
+        raise HTTPException(status_code=400, detail=f"Generated blueprint is invalid: {error_msgs}")
+
+    return payload

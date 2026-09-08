@@ -167,3 +167,15 @@ export async function runStressTest(payload, config = {}) {
 export async function simulateContractGraph(payload, config = {}) {
   return await httpClient.post('/contracts/simulate-graph', payload, config)
 }
+
+/**
+ * Generate a Term Life blueprint from simple guided parameters
+ * POST /api/v1/contracts/guided/term-life
+ * 
+ * @param {Object} payload - GuidedTermLifeRequest
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} ContractGraphPayload
+ */
+export async function generateGuidedTermLife(payload, config = {}) {
+  return await httpClient.post('/contracts/guided/term-life', payload, config)
+}

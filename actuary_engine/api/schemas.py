@@ -511,6 +511,21 @@ class GraphEdgeData(BaseModel):
     targetHandle: Optional[str] = Field(default=None, description="Destination port handle.")
 
 
+class GuidedTermLifeRequest(BaseModel):
+    """Parameters required to automatically generate a Term Life blueprint."""
+
+    product_type: str = Field(default="term_life", description="Product type identifier.")
+    issue_age: int = Field(default=35, ge=0, description="Entry age.")
+    term: int = Field(default=20, gt=0, description="Policy term in years.")
+    sum_assured: float = Field(default=1_000_000.0, gt=0.0, description="Face amount.")
+    premium_freq: str = Field(default="annual", description="Premium payment frequency.")
+    table_id: str = Field(default="soa_ilt", description="Mortality table identifier.")
+    interest_rate: float = Field(default=0.05, ge=0.0, le=0.50, description="Discount / Interest rate.")
+    lapse_rate: Optional[float] = Field(default=0.03, ge=0.0, le=1.0, description="Annual lapse rate.")
+    expense_first_year_pct: Optional[float] = Field(default=0.35, ge=0.0, le=1.0, description="Percentage of first year premium.")
+    expense_renewal_pct: Optional[float] = Field(default=0.05, ge=0.0, le=1.0, description="Percentage of renewal premium.")
+
+
 class ContractGraphPayload(BaseModel):
     """Complete serialized node-graph payload submitted for cash flow valuation."""
 
