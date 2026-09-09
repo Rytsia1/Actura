@@ -271,7 +271,7 @@ const loadJobs = async () => {
   error.value = null
   try {
     const res = await fetchJobs(100)
-    jobs.value = res.data
+    jobs.value = Array.isArray(res) ? res : (res?.data || [])
   } catch (err) {
     console.error('Failed to load run history', err)
     error.value = err.message || 'Failed to load run history. Please try again later.'

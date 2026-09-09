@@ -59,7 +59,8 @@ async function handleGenerate() {
     const blueprint = await generateGuidedTermLife(payload)
     
     // Store in pinia
-    valuationStore.setCustomBlueprintPayload(blueprint.data)
+    const payloadData = blueprint?.data || blueprint
+    valuationStore.setCustomBlueprintPayload(payloadData)
     
     // Navigate to builder
     router.push('/builder')

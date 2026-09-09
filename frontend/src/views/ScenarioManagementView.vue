@@ -161,8 +161,8 @@ async function loadData() {
   error.value = null
   try {
     const [modelsRes, scenRes] = await Promise.all([fetchBaseModels(), fetchScenarios()])
-    baseModels.value = modelsRes.data || []
-    scenarios.value = scenRes.data || []
+    baseModels.value = Array.isArray(modelsRes) ? modelsRes : (modelsRes?.data || [])
+    scenarios.value = Array.isArray(scenRes) ? scenRes : (scenRes?.data || [])
 
     if (baseModels.value.length > 0 && !baseModels.value.some((m) => m.id === selectedModelId.value)) {
       selectedModelId.value = baseModels.value[0].id
@@ -193,7 +193,7 @@ async function loadAuditLogs() {
   showAuditModal.value = true
   try {
     const res = await getBaseModelAuditLogs(currentBaseModel.value.id)
-    auditLogs.value = res.data
+    auditLogs.value = Array.isArray(res) ? res : (res?.data || [])
   } catch (err) {
     console.error('Failed to load audit logs:', err)
   } finally {
@@ -322,7 +322,8 @@ async function handleDuplicate(scen) {
   loading.value = true
   try {
     const res = await duplicateScenario(scen.id)
-    showNotification(`Duplicated scenario as "${res.data.name}"`)
+    const dupData = res?.data || res
+    showNotification(`Duplicated scenario as "${dupData?.name || 'New Scenario'}"`)
     await loadData()
   } catch (err) {
     console.error('Duplicate scenario error:', err)
@@ -354,10 +355,11 @@ async function handleDelete(scen) {
 async function handleValidate(scen) {
   try {
     const res = await validateScenario(scen.id)
-    validationResults.value[scen.id] = res.data
+    const valData = res?.data || res
+    validationResults.value[scen.id] = valData
     activeValidation.value = {
       scenario: scen,
-      result: res.data,
+      result: valData,
     }
     showValidationModal.value = true
   } catch (err) {
@@ -371,9 +373,10 @@ async function handleRun(scen) {
   error.value = null
   try {
     const res = await runScenario(scen.id)
-    executionResults.value[scen.id] = res.data
+    const execData = res?.data || res
+    executionResults.value[scen.id] = execData
     selectedResultScenario.value = scen
-    showNotification(`Executed valuation for "${scen.name}"! BEL: ${formatCurrency(res.data.bel)}`)
+    showNotification(`Executed valuation for "${scen.name}"! BEL: ${formatCurrency(execData?.bel)}`)
   } catch (err) {
     console.error('Scenario run error:', err)
     alert('Scenario valuation failed: ' + (err.response?.data?.detail || err.message))

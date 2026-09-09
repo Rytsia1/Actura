@@ -9,7 +9,22 @@ from passlib.context import CryptContext
 
 from actuary_engine.infrastructure.auth_repo import auth_repo
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY") or "super_secret_actura_key_please_change_in_production"
+def get_secret_key() -> str:
+    """
+    Retrieve JWT secret key with strict enforcement in production environments.
+    """
+    secret = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY")
+    if not secret:
+        env = (os.getenv("ENVIRONMENT") or os.getenv("ENV") or "development").lower()
+        if env in ("production", "prod", "staging"):
+            raise RuntimeError(
+                "Security configuration error: JWT_SECRET_KEY environment variable must be set in production."
+            )
+        return "super_secret_actura_key_please_change_in_production"
+    return secret
+
+
+SECRET_KEY = get_secret_key()
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", str(60 * 24)))  # 24 hours
 
@@ -33,7 +48,7 @@ def create_access_token(data: dict[str, Any], expires_delta: Optional[timedelta]
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, get_secret_key(), algorithm=ALGORITHM)
     return encoded_jwt
 
 

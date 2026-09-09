@@ -63,6 +63,11 @@ const routes = [
     component: ContractBuilderView,
   },
   {
+    path: '/builder',
+    name: 'Builder',
+    component: ContractBuilderView,
+  },
+  {
     path: '/wizard/:projectId?',
     name: 'ValuationWizard',
     component: () => import('../views/ValuationWizardView.vue'),

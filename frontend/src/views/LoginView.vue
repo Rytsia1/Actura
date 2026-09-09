@@ -67,12 +67,33 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
+import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const username = ref('')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
+
+function decodeJwtPayload(token) {
+  try {
+    const parts = (token || '').split('.')
+    if (parts.length < 2) return {}
+    const base64Url = parts[1]
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    )
+    return JSON.parse(jsonPayload)
+  } catch (e) {
+    console.warn('Failed to parse JWT payload:', e)
+    return {}
+  }
+}
 
 const handleLogin = async () => {
   loading.value = true
@@ -93,10 +114,12 @@ const handleLogin = async () => {
       }
     })
     
-    localStorage.setItem('token', response.data.access_token)
-    // Decode JWT payload for basic user info
-    const payload = JSON.parse(atob(response.data.access_token.split('.')[1]))
-    localStorage.setItem('user', JSON.stringify({ role: payload.role, org_id: payload.org_id, id: payload.sub }))
+    const token = response.data.access_token
+    const payload = decodeJwtPayload(token)
+    const user = { role: payload.role, org_id: payload.org_id, id: payload.sub }
+
+    // Synchronize Pinia reactive auth store & localStorage
+    authStore.setAuth(token, user)
     
     router.push('/')
   } catch (err) {

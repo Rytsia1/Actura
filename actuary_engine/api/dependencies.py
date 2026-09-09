@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 
 from actuary_engine.infrastructure.auth_repo import auth_repo
-from actuary_engine.api.auth import SECRET_KEY, ALGORITHM
+from actuary_engine.api.auth import SECRET_KEY, ALGORITHM, get_secret_key
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
@@ -30,7 +30,7 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(actual_token, get_secret_key(), algorithms=[ALGORITHM])
         user_id: str | None = payload.get("sub")
         if user_id is None:
             raise credentials_exception

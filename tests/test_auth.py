@@ -89,3 +89,20 @@ def test_rbac_viewer_denied_post(real_client: TestClient, setup_users):
     }, headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 403
     assert "Operation not permitted" in response.json()["detail"]
+
+
+def test_jwt_secret_key_production_enforcement(monkeypatch):
+    import os
+    from actuary_engine.api.auth import get_secret_key
+
+    # In production without key, must raise RuntimeError
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="JWT_SECRET_KEY environment variable must be set"):
+        get_secret_key()
+
+    # In production with key, must return configured key
+    monkeypatch.setenv("JWT_SECRET_KEY", "prod_configured_secret_123")
+    assert get_secret_key() == "prod_configured_secret_123"
+

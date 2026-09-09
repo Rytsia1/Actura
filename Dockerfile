@@ -9,9 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure modern build toolchain
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
 COPY requirements.txt .
 
-# Create python wheels for all dependencies
+# Create python wheels for all dependencies (including all transitive dependencies)
 RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 
 
@@ -28,9 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create a non-root user and group
 RUN groupadd -r actura && useradd -r -g actura actura
 
-# Copy wheels from builder and install them
+# Copy requirements and wheels from builder and install them deterministically
+COPY requirements.txt .
 COPY --from=builder /app/wheels /wheels
-RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* \
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
     && rm -rf /wheels
 
 # Copy application code

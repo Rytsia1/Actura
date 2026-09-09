@@ -265,7 +265,14 @@ export const useValuationStore = defineStore('valuation', {
      * Set the custom blueprint payload generated from Guided Mode
      */
     setCustomBlueprintPayload(payload) {
-      this.customBlueprintPayload = markRaw(payload)
+      this.customBlueprintPayload = payload ? markRaw(payload) : null
+    },
+
+    /**
+     * Clear custom blueprint payload
+     */
+    clearCustomBlueprintPayload() {
+      this.customBlueprintPayload = null
     },
   },
 })

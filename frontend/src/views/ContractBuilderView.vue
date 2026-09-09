@@ -120,7 +120,7 @@ function loadPreset(presetKey) {
 
 function loadCustomPayload(payload) {
   selectedPresetId.value = 'custom_generated'
-  simulationError.value = null
+  errorStore.clearError()
 
   const rawNodes = JSON.parse(JSON.stringify(payload.nodes))
   const rawEdges = JSON.parse(JSON.stringify(payload.edges))
@@ -134,16 +134,6 @@ function loadCustomPayload(payload) {
     fitView({ padding: 0.2, duration: 400 })
   })
 }
-
-onMounted(() => {
-  if (valuationStore.customBlueprintPayload) {
-    loadCustomPayload(valuationStore.customBlueprintPayload)
-    // Clear it so it doesn't persist forever
-    valuationStore.setCustomBlueprintPayload(null)
-  } else {
-    loadPreset(selectedPresetId.value)
-  }
-})
 
 function handleAutoLayout() {
   const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(nodes.value, edges.value, 'LR')
@@ -316,7 +306,10 @@ async function runSimulation() {
   await checkModelHealth()
   if (modelHealthReport.value && !modelHealthReport.value.is_ready_to_run) {
     isHealthDrawerOpen.value = true
-    simulationError.value = 'Pre-flight check failed: Model has critical defects. Open Model Health to inspect blockers.'
+    errorStore.setError({
+      code: 'PREFLIGHT_BLOCKED',
+      message: 'Pre-flight check failed: Model has critical defects. Open Model Health to inspect blockers.'
+    })
     return
   }
 
@@ -352,26 +345,35 @@ async function runSimulation() {
     loadingStore.updateStep('prepare', 'complete')
     loadingStore.updateStep('projection', 'active')
     
-    // Save blueprint to DB
+    let res = null
     const projectId = route.params.id
-    const saveResponse = await projectApi.saveBlueprint(projectId, "Draft Blueprint", payload)
-    const contract = saveResponse.data || saveResponse
-    
-    loadingStore.updateStep('projection', 'complete')
-    loadingStore.updateStep('stochastic', 'active')
-    
-    // Run Valuation
-    const runResponse = await projectApi.runValuation(projectId, contract.id)
-    const run = runResponse.data || runResponse
-    
-    // Fetch result
-    let res = null;
-    if (run.status === 'completed') {
-       const resultResponse = await projectApi.getValuationResult(projectId, run.id)
-       const resultData = resultResponse.data || resultResponse
-       res = resultData.result?.full_output || {}
+
+    if (projectId) {
+      // Save blueprint to DB
+      const saveResponse = await projectApi.saveBlueprint(projectId, "Draft Blueprint", payload)
+      const contract = saveResponse.data || saveResponse
+      
+      loadingStore.updateStep('projection', 'complete')
+      loadingStore.updateStep('stochastic', 'active')
+      
+      // Run Valuation
+      const runResponse = await projectApi.runValuation(projectId, contract.id)
+      const run = runResponse.data || runResponse
+      
+      // Fetch result
+      if (run.status === 'completed') {
+         const resultResponse = await projectApi.getValuationResult(projectId, run.id)
+         const resultData = resultResponse.data || resultResponse
+         res = resultData.result?.full_output || {}
+      } else {
+         throw new Error(`Valuation failed: ${run.status}`)
+      }
     } else {
-       throw new Error(`Valuation failed: ${run.status}`)
+      // Standalone simulation (Sandbox or Guided Mode)
+      loadingStore.updateStep('projection', 'complete')
+      loadingStore.updateStep('stochastic', 'active')
+      const simResponse = await simulateContractGraph(payload)
+      res = simResponse.data || simResponse
     }
 
     loadingStore.updateStep('stochastic', 'complete')
@@ -540,40 +542,45 @@ function clearHighlight() {
 // Lifecycle
 // ────────────────────────────────────────────────────────────
 onMounted(async () => {
-  const projectId = route.params.id
-  if (projectId) {
-    try {
-      const response = await projectApi.listBlueprints(projectId)
-      const contracts = response.data || response
-      if (contracts && contracts.length > 0) {
-        const contract = contracts[0] // Load latest/first contract
-        const blueprint = contract.blueprint_json
-        
-        // Populate nodes and edges from blueprint
-        if (blueprint.nodes && blueprint.edges) {
-          // If nodes don't have positions (e.g. fresh from wizard preset), auto-layout them
-          const needsLayout = blueprint.nodes.some(n => !n.position)
-          if (needsLayout) {
-            const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(blueprint.nodes, blueprint.edges, 'LR')
-            nodes.value = layoutedNodes
-            edges.value = layoutedEdges
+  if (valuationStore.customBlueprintPayload) {
+    loadCustomPayload(valuationStore.customBlueprintPayload)
+    valuationStore.clearCustomBlueprintPayload()
+  } else {
+    const projectId = route.params.id
+    if (projectId) {
+      try {
+        const response = await projectApi.listBlueprints(projectId)
+        const contracts = response.data || response
+        if (contracts && contracts.length > 0) {
+          const contract = contracts[0] // Load latest/first contract
+          const blueprint = contract.blueprint_json
+          
+          // Populate nodes and edges from blueprint
+          if (blueprint.nodes && blueprint.edges) {
+            // If nodes don't have positions (e.g. fresh from wizard preset), auto-layout them
+            const needsLayout = blueprint.nodes.some(n => !n.position)
+            if (needsLayout) {
+              const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(blueprint.nodes, blueprint.edges, 'LR')
+              nodes.value = layoutedNodes
+              edges.value = layoutedEdges
+            } else {
+              nodes.value = blueprint.nodes
+              edges.value = blueprint.edges
+            }
+            nextTick(() => fitView({ padding: 0.2, duration: 400 }))
           } else {
-            nodes.value = blueprint.nodes
-            edges.value = blueprint.edges
+            loadPreset('term_life_20y')
           }
-          nextTick(() => fitView({ padding: 0.2, duration: 400 }))
         } else {
           loadPreset('term_life_20y')
         }
-      } else {
+      } catch (err) {
+        console.error("Failed to fetch blueprint:", err)
         loadPreset('term_life_20y')
       }
-    } catch (err) {
-      console.error("Failed to fetch blueprint:", err)
-      loadPreset('term_life_20y')
+    } else {
+      loadPreset(selectedPresetId.value || 'term_life_20y')
     }
-  } else {
-    loadPreset('term_life_20y')
   }
 
   resizeObserver = new ResizeObserver(() => {

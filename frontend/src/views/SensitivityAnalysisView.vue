@@ -87,7 +87,7 @@ async function loadBaseModels() {
   modelsLoading.value = true
   try {
     const res = await fetchBaseModels()
-    baseModels.value = res.data || []
+    baseModels.value = Array.isArray(res) ? res : (res?.data || [])
     if (baseModels.value.length > 0 && !baseModels.value.some((m) => m.id === selectedModelId.value)) {
       selectedModelId.value = baseModels.value[0].id
     }
@@ -117,7 +117,7 @@ async function runAnalysis() {
     }
 
     const res = await runSensitivityAnalysisV2(payload)
-    sensitivityResult.value = res.data
+    sensitivityResult.value = res?.data || res
     showConfigModal.value = false
   } catch (err) {
     console.error('Sensitivity analysis error:', err)

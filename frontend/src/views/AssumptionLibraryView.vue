@@ -49,7 +49,7 @@ async function loadAssumptions() {
   error.value = null
   try {
     const res = await fetchAssumptions()
-    assumptions.value = res.data || []
+    assumptions.value = Array.isArray(res) ? res : (res?.data || [])
   } catch (err) {
     error.value = 'Failed to load assumptions.'
     console.error(err)
@@ -97,7 +97,7 @@ async function viewHistory(assumption) {
   selectedAssumption.value = assumption
   try {
     const res = await fetchAssumptionHistory(assumption.id)
-    historyRecords.value = res.data || []
+    historyRecords.value = Array.isArray(res) ? res : (res?.data || [])
     showModal.value = true
   } catch (err) {
     console.error('Failed to load history', err)
@@ -134,7 +134,8 @@ async function toggleStatus(assumption) {
 
 function formatDate(timestamp) {
   if (!timestamp) return '—'
-  return new Date(timestamp * 1000).toLocaleString()
+  const date = typeof timestamp === 'number' ? new Date(timestamp > 1e11 ? timestamp : timestamp * 1000) : new Date(timestamp)
+  return isNaN(date.getTime()) ? '—' : date.toLocaleString()
 }
 </script>
 

@@ -92,7 +92,7 @@ async function loadRuns() {
   runsLoading.value = true
   try {
     const res = await fetchComparableRuns({ limit: 100 })
-    comparableRuns.value = res.data || []
+    comparableRuns.value = Array.isArray(res) ? res : (res?.data || [])
   } catch (err) {
     console.warn('Failed to load comparable runs:', err)
   } finally {
@@ -110,7 +110,7 @@ async function executeComparison() {
       run_a_id: runAId.value,
       run_b_id: runBId.value,
     })
-    comparisonData.value = res.data
+    comparisonData.value = res?.data || res
   } catch (err) {
     console.error('Run comparison failed:', err)
     error.value = err.response?.data?.detail || err.message || 'Failed to compare runs.'
