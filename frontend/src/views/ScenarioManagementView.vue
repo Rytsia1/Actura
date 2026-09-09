@@ -10,7 +10,10 @@ import {
   validateScenario,
   runScenario,
   deleteScenario,
+  updateBaseModelStatus,
+  getBaseModelAuditLogs,
 } from '../services/actuaryApi'
+import { useAuthStore } from '../stores/auth'
 import {
   Layers,
   Plus,
@@ -45,6 +48,13 @@ const selectedModelId = ref('default-endowment')
 const loading = ref(false)
 const error = ref(null)
 const successMessage = ref(null)
+
+const authStore = useAuthStore()
+
+// Audit Logs State
+const showAuditModal = ref(false)
+const auditLogs = ref([])
+const loadingAudit = ref(false)
 
 // Filter & Search State
 const searchQuery = ref('')
@@ -158,10 +168,36 @@ async function loadData() {
       selectedModelId.value = baseModels.value[0].id
     }
   } catch (err) {
-    console.error('Failed to load scenarios or models:', err)
-    error.value = 'Failed to load scenario data from engine.'
+    console.error('Failed to load base models:', err)
+    error.value = 'Failed to load base models. Ensure backend is running.'
   } finally {
     loading.value = false
+  }
+}
+
+async function handleStatusChange(status) {
+  if (!currentBaseModel.value) return
+  try {
+    const res = await updateBaseModelStatus(currentBaseModel.value.id, status)
+    showNotification(`Model status updated to ${status}`)
+    await loadData()
+  } catch (err) {
+    console.error('Status update error:', err)
+    alert('Failed to update status: ' + (err.response?.data?.detail || err.message))
+  }
+}
+
+async function loadAuditLogs() {
+  if (!currentBaseModel.value) return
+  loadingAudit.value = true
+  showAuditModal.value = true
+  try {
+    const res = await getBaseModelAuditLogs(currentBaseModel.value.id)
+    auditLogs.value = res.data
+  } catch (err) {
+    console.error('Failed to load audit logs:', err)
+  } finally {
+    loadingAudit.value = false
   }
 }
 
@@ -496,6 +532,52 @@ onMounted(() => {
           <div class="flex justify-between py-1">
             <span class="text-slate-400">Base Lapse Rate</span>
             <span class="font-medium text-white">{{ formatPercent(currentBaseModel.lapse?.flat_annual_rate || 0.03) }}</span>
+          </div>
+
+          <!-- Model Lifecycle & Audit -->
+          <div class="mt-3 pt-3 border-t border-white/[0.04]">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-slate-400">Lifecycle Status</span>
+              <span :class="[
+                'px-2 py-0.5 text-[10px] font-bold rounded-full border',
+                currentBaseModel.lifecycle_status === 'Approved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                currentBaseModel.lifecycle_status === 'Locked' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
+                currentBaseModel.lifecycle_status === 'Under Review' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                'bg-slate-700 text-slate-300 border-slate-600'
+              ]">
+                {{ currentBaseModel.lifecycle_status || 'Draft' }}
+              </span>
+            </div>
+            
+            <div class="flex items-center gap-2 mt-3">
+              <button @click="loadAuditLogs" class="flex-1 py-1.5 px-2 bg-slate-800 hover:bg-slate-700 border border-white/[0.1] rounded text-xs text-center transition-colors">
+                Audit Trail
+              </button>
+              
+              <button 
+                v-if="(currentBaseModel.lifecycle_status === 'Draft' || currentBaseModel.lifecycle_status === 'Validated') && ['Admin', 'Actuary'].includes(authStore.user?.role)"
+                @click="handleStatusChange('Submitted')"
+                class="flex-1 py-1.5 px-2 bg-indigo-600/80 hover:bg-indigo-500 text-white rounded text-xs text-center transition-colors"
+              >
+                Submit
+              </button>
+
+              <button 
+                v-if="['Submitted', 'Under Review'].includes(currentBaseModel.lifecycle_status) && ['Admin', 'Reviewer'].includes(authStore.user?.role)"
+                @click="handleStatusChange('Approved')"
+                class="flex-1 py-1.5 px-2 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded text-xs text-center transition-colors"
+              >
+                Approve
+              </button>
+              
+              <button 
+                v-if="currentBaseModel.lifecycle_status === 'Approved' && ['Admin', 'Reviewer'].includes(authStore.user?.role)"
+                @click="handleStatusChange('Locked')"
+                class="flex-1 py-1.5 px-2 bg-rose-600/80 hover:bg-rose-500 text-white rounded text-xs text-center transition-colors"
+              >
+                Lock
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1261,6 +1343,64 @@ onMounted(() => {
           >
             Close
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Audit Log Modal -->
+    <div v-if="showAuditModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+      <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="showAuditModal = false"></div>
+      
+      <div class="relative bg-[#0B0F19] border border-white/[0.1] rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-full">
+        <div class="p-5 border-b border-white/[0.06] flex items-center justify-between bg-slate-800/40">
+          <div>
+            <h2 class="text-base font-bold text-white flex items-center gap-2">
+              <ShieldCheck class="w-5 h-5 text-indigo-400" />
+              Model Audit Trail
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5 font-mono">ID: {{ currentBaseModel?.id }}</p>
+          </div>
+          <button
+            @click="showAuditModal = false"
+            class="text-slate-400 hover:text-white transition-colors"
+          >
+            <XCircle class="w-5 h-5" />
+          </button>
+        </div>
+
+        <div class="p-5 overflow-y-auto flex-1">
+          <div v-if="loadingAudit" class="py-8 flex flex-col items-center text-slate-400">
+            <RefreshCw class="w-6 h-6 animate-spin text-indigo-400 mb-2" />
+            <span class="text-xs uppercase tracking-widest">Loading history...</span>
+          </div>
+          
+          <div v-else-if="auditLogs.length === 0" class="py-8 text-center text-slate-500 text-xs italic">
+            No audit events found.
+          </div>
+
+          <div v-else class="space-y-4">
+            <div v-for="log in auditLogs" :key="log.id" class="p-4 bg-slate-800/40 rounded-xl border border-white/[0.04]">
+              <div class="flex items-start justify-between mb-2">
+                <div class="flex items-center gap-2">
+                  <span class="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px] font-bold font-mono">
+                    {{ log.action }}
+                  </span>
+                  <span class="text-xs text-slate-300 font-semibold">{{ log.user_id }}</span>
+                </div>
+                <span class="text-[10px] text-slate-500">{{ new Date(log.timestamp * 1000).toLocaleString() }}</span>
+              </div>
+              <div v-if="log.action === 'MODEL_UPDATED' || log.action === 'MODEL_STATUS_CHANGED' || log.action.startsWith('MODEL_')" class="mt-3 grid grid-cols-2 gap-3">
+                <div class="bg-slate-900/60 p-2 rounded border border-white/[0.05]">
+                  <span class="text-[10px] font-semibold text-rose-400 uppercase tracking-wide block mb-1">Previous</span>
+                  <pre class="text-[10px] text-slate-300 font-mono whitespace-pre-wrap overflow-x-auto">{{ JSON.stringify(log.previous_value?.lifecycle_status || log.previous_value, null, 2) }}</pre>
+                </div>
+                <div class="bg-slate-900/60 p-2 rounded border border-white/[0.05]">
+                  <span class="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide block mb-1">New</span>
+                  <pre class="text-[10px] text-slate-300 font-mono whitespace-pre-wrap overflow-x-auto">{{ JSON.stringify(log.new_value?.lifecycle_status || log.new_value, null, 2) }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

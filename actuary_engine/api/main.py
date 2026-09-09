@@ -86,9 +86,13 @@ from actuary_engine.api.schemas import (
     RunComparisonResponse,
     ModelHealthRequest,
     ModelHealthReport,
+    BaseModelUpdate,
+    ModelStatusUpdate,
+    AuditLogRead,
 )
 from actuary_engine.infrastructure.assumption_repo import assumption_repo
 from actuary_engine.infrastructure.scenario_repo import scenario_repo
+from actuary_engine.infrastructure.audit_repo import audit_repo
 from actuary_engine.services.scenario_service import scenario_service
 from actuary_engine.services.sensitivity_service import sensitivity_service
 from actuary_engine.services.run_comparison_service import run_comparison_service
@@ -1267,7 +1271,10 @@ def create_assumption(payload: AssumptionCreate):
     """Create a completely new assumption (Version 1)."""
     try:
         data = payload.model_dump()
-        return assumption_repo.create_assumption(data)
+        created = assumption_repo.create_assumption(data)
+        user = getattr(create_assumption, "current_user", {"id": "system"})  # Fallback if dependency injection is mocked
+        audit_repo.log_event(user.get("id", "system"), "ASSUMPTION", created["id"], "ASSUMPTION_CREATED", new_value=created)
+        return created
     except Exception as e:
         logger.exception("Failed to create assumption")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1303,7 +1310,10 @@ def create_assumption_version(id: str, payload: AssumptionVersionCreate):
         if "type" not in data or not data["type"]:
             data["type"] = record["type"]
             
-        return assumption_repo.create_new_version(id, data)
+        created = assumption_repo.create_new_version(id, data)
+        user = getattr(create_assumption_version, "current_user", {"id": "system"})
+        audit_repo.log_event(user.get("id", "system"), "ASSUMPTION", created["id"], "ASSUMPTION_VERSION_CREATED", new_value=created)
+        return created
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1343,14 +1353,76 @@ def get_base_model(id: str):
 
 
 @app.post("/api/v1/models", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
-def create_base_model(payload: BaseModelCreate):
+def create_base_model(payload: BaseModelCreate, user: dict = Depends(get_current_user)):
     """Create a new reusable base model."""
     try:
         data = payload.model_dump()
-        return scenario_repo.create_base_model(data)
+        created = scenario_repo.create_base_model(data)
+        audit_repo.log_event(user.get("id", "system"), "MODEL", created["id"], "MODEL_CREATED", new_value=created)
+        return created
     except Exception as e:
-        logger.exception("Failed to create base model")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/models/{id}", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def update_base_model(id: str, payload: BaseModelUpdate, user: dict = Depends(get_current_user)):
+    """Update an existing base model. Rejected if status is Approved or Locked."""
+    try:
+        data = payload.model_dump(exclude_unset=True)
+        old_model = scenario_repo.get_base_model(id)
+        if not old_model:
+            raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+            
+        updated = scenario_repo.update_base_model(id, data)
+        audit_repo.log_event(user.get("id", "system"), "MODEL", id, "MODEL_UPDATED", previous_value=old_model, new_value=updated)
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update base model")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/models/{id}/status", response_model=BaseModelRead)
+def update_base_model_status(id: str, payload: ModelStatusUpdate, user: dict = Depends(get_current_user)):
+    """Update lifecycle status. Only Reviewers/Admins can Approve/Reject/Lock."""
+    status = payload.status
+    role = user.get("role", "Viewer")
+    
+    # Enforce role logic
+    if status in ["Approved", "Rejected", "Locked"]:
+        if role not in ["Reviewer", "Admin"]:
+            raise HTTPException(status_code=403, detail=f"{role} cannot transition model to {status}.")
+    else:
+        if role not in ["Actuary", "Admin", "Reviewer"]:
+            raise HTTPException(status_code=403, detail=f"{role} cannot transition model status.")
+            
+    try:
+        old_model = scenario_repo.get_base_model(id)
+        if not old_model:
+            raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+            
+        updated = scenario_repo.update_base_model_status(id, status)
+        action_map = {
+            "Submitted": "MODEL_SUBMITTED",
+            "Approved": "MODEL_APPROVED",
+            "Rejected": "MODEL_REJECTED",
+            "Locked": "MODEL_LOCKED",
+        }
+        action = action_map.get(status, "MODEL_STATUS_CHANGED")
+        audit_repo.log_event(user.get("id", "system"), "MODEL", id, action, previous_value=old_model, new_value=updated)
+        return updated
+    except Exception as e:
+        logger.exception("Failed to update base model status")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/models/{id}/audit", response_model=list[AuditLogRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_base_model_audit_logs(id: str):
+    """Retrieve audit history for a base model."""
+    if not scenario_repo.get_base_model(id):
+        raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+    return audit_repo.get_logs_for_entity("MODEL", id)
+
 
 
 # ────────────────────────────────────────────────────────────
@@ -1419,13 +1491,18 @@ def validate_scenario(id: str):
 
 
 @app.post("/api/v1/scenarios/{id}/run", response_model=ScenarioExecutionResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
-def run_scenario(id: str):
+def run_scenario(id: str, user: dict = Depends(get_current_user)):
     """Execute deterministic valuation for scenario, compute baseline delta, and persist in job history."""
+    audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_STARTED")
     try:
-        return scenario_service.execute_scenario(id)
+        res = scenario_service.execute_scenario(id)
+        audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_COMPLETED", run_id=res.job_id)
+        return res
     except ValueError as e:
+        audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_FAILED", new_value={"error": str(e)})
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_FAILED", new_value={"error": str(e)})
         logger.exception("Failed to execute scenario '%s'", id)
         raise HTTPException(status_code=500, detail=f"Scenario execution failed: {e}")
 

@@ -33,6 +33,7 @@ base_models_table = Table(
     Column("name", String, nullable=False),
     Column("description", String, default=""),
     Column("project_id", String, nullable=False, default="default-project"),
+    Column("lifecycle_status", String, nullable=False, default="Draft"),
     Column("product_type", String, nullable=False),
     Column("issue_age", Integer, nullable=False),
     Column("term", Integer, nullable=True),
@@ -100,6 +101,7 @@ class ScenarioRepository:
                         "name": "20-Year Endowment (Baseline)",
                         "description": "Standard 20-Year Endowment contract, issue age 30, sum assured 1,000,000, 5% interest rate",
                         "project_id": "default-project",
+                        "lifecycle_status": "Draft",
                         "product_type": "endowment",
                         "issue_age": 30,
                         "term": 20,
@@ -252,6 +254,7 @@ class ScenarioRepository:
             "expense": json.loads(row.expense) if row.expense else {},
             "lapse": json.loads(row.lapse) if row.lapse else {},
             "gross_premium": row.gross_premium,
+            "lifecycle_status": getattr(row, "lifecycle_status", "Draft"),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
@@ -287,8 +290,8 @@ class ScenarioRepository:
             "premium_paying_term": data.get("premium_paying_term"),
             "interest_rate": data.get("interest_rate", 0.05),
             "table_id": data.get("table_id", "soa_ilt"),
-            "expense": json.dumps(data.get("expense", {})),
-            "lapse": json.dumps(data.get("lapse", {})),
+            "expense": json.dumps(data.get("expense") or {}),
+            "lapse": json.dumps(data.get("lapse") or {}),
             "gross_premium": data.get("gross_premium"),
             "created_at": now,
             "updated_at": now,
@@ -297,6 +300,50 @@ class ScenarioRepository:
         with self.engine.begin() as conn:
             conn.execute(stmt)
         return self.get_base_model(model_id)  # type: ignore[return-value]
+
+    def update_base_model(self, model_id: str, data: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Update an existing base model, rejecting if Approved or Locked."""
+        existing = self.get_base_model(model_id)
+        if not existing:
+            return None
+        
+        if existing.get("lifecycle_status") in ["Approved", "Locked"]:
+            raise ValueError(f"Cannot modify model '{model_id}' because its status is {existing['lifecycle_status']}. Changes require a new version.")
+
+        now = time.time()
+        values: dict[str, Any] = {"updated_at": now}
+        
+        updatable_fields = [
+            "name", "description", "product_type", "issue_age", "term",
+            "sum_assured", "premium_paying_term", "interest_rate", "table_id",
+            "gross_premium"
+        ]
+        
+        for field in updatable_fields:
+            if field in data and data[field] is not None:
+                values[field] = data[field]
+                
+        if "expense" in data:
+            values["expense"] = json.dumps(data["expense"] or {})
+        if "lapse" in data:
+            values["lapse"] = json.dumps(data["lapse"] or {})
+
+        stmt = update(base_models_table).where(base_models_table.c.id == model_id).values(**values)
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
+        return self.get_base_model(model_id)
+        
+    def update_base_model_status(self, model_id: str, status: str) -> Optional[dict[str, Any]]:
+        """Update the lifecycle status of a model."""
+        stmt = update(base_models_table).where(base_models_table.c.id == model_id).values(
+            lifecycle_status=status,
+            updated_at=time.time()
+        )
+        with self.engine.begin() as conn:
+            res = conn.execute(stmt)
+            if res.rowcount == 0:
+                return None
+        return self.get_base_model(model_id)
 
     # ────────────────────────────────────────────────────────────
     # Scenario Operations

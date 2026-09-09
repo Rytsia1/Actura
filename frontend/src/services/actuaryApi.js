@@ -257,6 +257,18 @@ export async function createBaseModel(payload) {
   return await httpClient.post('/models', payload)
 }
 
+export async function updateBaseModel(id, payload) {
+  return await httpClient.put(`/models/${id}`, payload)
+}
+
+export async function updateBaseModelStatus(id, status) {
+  return await httpClient.put(`/models/${id}/status`, { status })
+}
+
+export async function getBaseModelAuditLogs(id) {
+  return await httpClient.get(`/models/${id}/audit`)
+}
+
 export async function fetchScenarios(baseModelId = null, status = null) {
   const params = {}
   if (baseModelId) params.base_model_id = baseModelId

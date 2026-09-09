@@ -159,6 +159,21 @@ class BaseModelCreate(BaseModel):
     lapse: Optional[LapseAssumption] = Field(default=None, description="Baseline lapse assumptions.")
     gross_premium: Optional[float] = Field(default=None, gt=0.0, description="Fixed gross premium override.")
 
+class BaseModelUpdate(BaseModel):
+    """Schema for updating an existing base model."""
+    name: Optional[str] = Field(default=None, description="Model name.")
+    description: Optional[str] = Field(default=None, description="Model description.")
+    product_type: Optional[ProductType] = Field(default=None, description="Insurance product type.")
+    issue_age: Optional[int] = Field(default=None, ge=0, description="Policyholder issue age.")
+    term: Optional[int] = Field(default=None, gt=0, description="Policy term in years.")
+    sum_assured: Optional[float] = Field(default=None, gt=0.0, description="Sum assured.")
+    premium_paying_term: Optional[int] = Field(default=None, gt=0, description="Premium paying term.")
+    interest_rate: Optional[float] = Field(default=None, ge=0.0, le=0.50, description="Baseline annual interest rate.")
+    table_id: Optional[str] = Field(default=None, description="Mortality table identifier.")
+    expense: Optional[ExpenseAssumption] = Field(default=None, description="Baseline expense loadings.")
+    lapse: Optional[LapseAssumption] = Field(default=None, description="Baseline lapse assumptions.")
+    gross_premium: Optional[float] = Field(default=None, gt=0.0, description="Fixed gross premium override.")
+
 
 class BaseModelRead(BaseModel):
     """Schema for reading base model information."""
@@ -175,8 +190,25 @@ class BaseModelRead(BaseModel):
     expense: dict[str, Any]
     lapse: dict[str, Any]
     gross_premium: Optional[float]
+    lifecycle_status: str
     created_at: float
     updated_at: float
+
+class ModelStatusUpdate(BaseModel):
+    """Schema for updating the lifecycle status of a model."""
+    status: str = Field(..., description="Target status (Draft, Validated, Submitted, Under Review, Approved, Locked, Rejected)")
+
+class AuditLogRead(BaseModel):
+    """Schema for reading audit logs."""
+    id: str
+    user_id: str
+    entity_type: str
+    entity_id: str
+    action: str
+    previous_value: Optional[dict[str, Any]]
+    new_value: Optional[dict[str, Any]]
+    run_id: Optional[str]
+    timestamp: float
 
 
 class ScenarioValidationResult(BaseModel):
