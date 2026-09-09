@@ -1,63 +1,48 @@
 import cProfile
 import pstats
-import os
-import sys
-
-# Add project root to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from actuary_engine.stochastic.monte_carlo import StochasticValuationEngine
-from actuary_engine.stochastic.esg import VasicekESG, VasicekParams
+import io
+import time
+from actuary_engine.domain.stochastic.monte_carlo import StochasticValuationEngine
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
-def run_simulation():
-    # Hardcoded parameters matching the benchmark
-    discount_rate = 0.05
-    num_paths = 10000
-    random_seed = 42
-    
-    # Load the bundled SOA ILT
-    mortality_table = MortalityTable.from_soa_ilt()
-    
+def profile_stochastic_engine():
+    """Profile the stochastic engine with 100,000 paths to find hotspots."""
+    mortality = MortalityTable.from_soa_ilt()
     params = VasicekParams(
-        r0=discount_rate,
-        kappa=0.001, 
-        theta=discount_rate,
-        sigma=0.0
+        r0=0.05,
+        kappa=0.15,
+        theta=0.05,
+        sigma=0.02
     )
     esg = VasicekESG(params=params)
-    
     contract = PolicyContract(
         issue_age=30,
         product_type=ProductType.WHOLE_LIFE,
         sum_assured=100000.0
     )
     
-    engine = StochasticValuationEngine(table=mortality_table, esg=esg)
+    engine = StochasticValuationEngine(table=mortality, esg=esg)
     
-    print(f"Running Monte Carlo Simulation with {num_paths} paths...")
-    # This is the core method we are profiling to identify hotspots
-    engine.run_simulation(contract, 0.0, n_scenarios=num_paths, seed=random_seed)
-
-def main():
-    prof_file = "profile_output.prof"
+    print("Starting profiler for 100,000 paths...")
+    profiler = cProfile.Profile()
+    profiler.enable()
     
-    print("Starting cProfile...")
-    cProfile.run('run_simulation()', prof_file)
-    print("Profiling complete.\n")
+    # Run the simulation
+    result = engine.run_simulation(contract, gross_premium=1000.0, n_scenarios=100000, seed=42)
     
-    print("--- Top 10 Hotspots (Sorted by Cumulative Time) ---")
-    p = pstats.Stats(prof_file)
-    p.strip_dirs().sort_stats('cumtime').print_stats(10)
+    profiler.disable()
     
-    print("\n--- Initial Profiling Analysis ---")
-    print("Analyze the output above. If the hotspot is in the random number generation, ")
-    print("the discounting loop, or the mortality lookup, local optimizations apply.")
-    print("Suggest an actionable optimization for the top hotspot:")
-    print("  - Hotspot in pure Python loops? Suggest vectorizing with NumPy broadcasting.")
-    print("  - Hotspot in mortality table lookup? Suggest pre-caching age arrays.")
-    print("  - Hotspot in discounting? Suggest using np.einsum for geometric series.")
+    # Print top 15 functions by cumulative time
+    stream = io.StringIO()
+    stats = pstats.Stats(profiler, stream=stream)
+    stats.sort_stats('cumtime').print_stats(25)
+    
+    print("\n[Profile] Top 25 Bottlenecks (by cumulative time):")
+    print(stream.getvalue())
+    
+    return profiler, result
 
 if __name__ == "__main__":
-    main()
+    profile_stochastic_engine()

@@ -11,7 +11,7 @@ import pandas as pd
 
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 from actuary_engine.valuation.portfolio import PortfolioSummary, PortfolioValuationEngine
 
@@ -161,7 +161,7 @@ class TestPortfolioAPIEndpoints:
 
     def test_portfolio_csv_upload_endpoint(self) -> None:
         from fastapi.testclient import TestClient
-        from actuary_engine.api.main import app
+        from actuary_engine.main import app
 
         client = TestClient(app)
         csv_content = b"policy_id,issue_age,term_years,sum_assured,gross_premium,product_type,policy_duration_years\nPOL-1,30,20,1000000,2500,term,0\nPOL-2,40,15,500000,18000,endowment,2\n"
@@ -181,7 +181,7 @@ class TestPortfolioAPIEndpoints:
 
     def test_portfolio_json_endpoint(self) -> None:
         from fastapi.testclient import TestClient
-        from actuary_engine.api.main import app
+        from actuary_engine.main import app
 
         client = TestClient(app)
         payload = {
@@ -199,7 +199,7 @@ class TestPortfolioAPIEndpoints:
 
     def test_portfolio_sample_csv_download(self) -> None:
         from fastapi.testclient import TestClient
-        from actuary_engine.api.main import app
+        from actuary_engine.main import app
 
         client = TestClient(app)
         response = client.get("/api/v1/valuation/portfolio/sample_csv?n_policies=100")

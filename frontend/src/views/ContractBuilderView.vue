@@ -39,7 +39,14 @@ import AccumulatorNode from '../components/nodes/AccumulatorNode.vue'
 import ModelHealthDrawer from '../components/ModelHealthDrawer.vue'
 
 import { PRESET_TEMPLATES, layoutGraph } from '../utils/presets'
-import { simulateContractGraph, evaluateContractHealth } from '../services/actuaryApi'
+import { simulateContractGraph, evaluateContractHealth, ActuaryApiError } from '../services/actuaryApi'
+import { useLoadingStore } from '../stores/useLoadingStore'
+import { useErrorStore } from '../stores/useErrorStore'
+import ErrorBanner from '../components/ErrorBanner.vue'
+import LoadingOverlay from '../components/LoadingOverlay.vue'
+import EmptyState from '../components/EmptyState.vue'
+import { useRoute } from 'vue-router'
+import { projectApi } from '../services/projectApi'
 
 // ────────────────────────────────────────────────────────────
 // Custom Node Registrations (markRaw for Vue reactivity performance)
@@ -61,7 +68,6 @@ const nodes = ref([])
 const edges = ref([])
 const isSimulating = ref(false)
 const simulationResult = shallowRef(null)
-const simulationError = ref(null)
 const showResultsDrawer = ref(false)
 const selectedTrace = ref(null)
 const isTraceDrawerOpen = ref(false)
@@ -69,6 +75,10 @@ const isTraceDrawerOpen = ref(false)
 const modelHealthReport = ref(null)
 const isHealthDrawerOpen = ref(false)
 const isEvaluatingHealth = ref(false)
+
+const loadingStore = useLoadingStore()
+const errorStore = useErrorStore()
+const route = useRoute()
 
 const { project, fitView, addNodes, onConnect, addEdges } = useVueFlow()
 
@@ -90,7 +100,7 @@ function loadPreset(presetKey) {
   if (!template) return
 
   selectedPresetId.value = presetKey
-  simulationError.value = null
+  errorStore.clearError()
 
   // Clone nodes and edges to avoid mutation
   const rawNodes = JSON.parse(JSON.stringify(template.nodes))
@@ -298,7 +308,7 @@ const healthButtonClass = computed(() => {
 
 async function runSimulation() {
   if (nodes.value.length === 0) {
-    simulationError.value = 'Canvas is empty. Add nodes or load a preset template.'
+    errorStore.setError({ code: 'EMPTY_BLUEPRINT', message: 'Canvas is empty. Add nodes or load a preset template.' })
     return
   }
 
@@ -311,7 +321,9 @@ async function runSimulation() {
   }
 
   isSimulating.value = true
-  simulationError.value = null
+  errorStore.clearError()
+  loadingStore.startLoading()
+  loadingStore.updateStep('prepare', 'active')
 
   // Update sink nodes with loading indicator
   nodes.value.forEach((node) => {
@@ -322,7 +334,6 @@ async function runSimulation() {
 
   try {
     const payload = {
-      contract_id: `GRAPH-${Date.now()}`,
       nodes: nodes.value.map((n) => ({
         id: n.id,
         type: n.type,
@@ -338,7 +349,35 @@ async function runSimulation() {
       })),
     }
 
-    const res = await simulateContractGraph(payload)
+    loadingStore.updateStep('prepare', 'complete')
+    loadingStore.updateStep('projection', 'active')
+    
+    // Save blueprint to DB
+    const projectId = route.params.id
+    const saveResponse = await projectApi.saveBlueprint(projectId, "Draft Blueprint", payload)
+    const contract = saveResponse.data || saveResponse
+    
+    loadingStore.updateStep('projection', 'complete')
+    loadingStore.updateStep('stochastic', 'active')
+    
+    // Run Valuation
+    const runResponse = await projectApi.runValuation(projectId, contract.id)
+    const run = runResponse.data || runResponse
+    
+    // Fetch result
+    let res = null;
+    if (run.status === 'completed') {
+       const resultResponse = await projectApi.getValuationResult(projectId, run.id)
+       const resultData = resultResponse.data || resultResponse
+       res = resultData.result?.full_output || {}
+    } else {
+       throw new Error(`Valuation failed: ${run.status}`)
+    }
+
+    loadingStore.updateStep('stochastic', 'complete')
+    loadingStore.updateStep('risk', 'complete')
+    loadingStore.updateStep('finalize', 'active')
+
     simulationResult.value = res
     showResultsDrawer.value = true
 
@@ -356,12 +395,23 @@ async function runSimulation() {
       }
     })
 
+    loadingStore.updateStep('finalize', 'complete')
     await nextTick()
     renderResultCharts()
   } catch (err) {
     console.error('Graph simulation error:', err)
-    simulationError.value = err.message || 'Failed to simulate contract logic graph.'
+    loadingStore.updateStep('projection', 'error')
+    loadingStore.updateStep('stochastic', 'error')
+    loadingStore.updateStep('risk', 'error')
+    loadingStore.updateStep('finalize', 'error')
+    
+    if (err instanceof ActuaryApiError) {
+      errorStore.setError(err)
+    } else {
+      errorStore.setError({ message: err.message || 'Failed to simulate contract logic graph.' })
+    }
   } finally {
+    loadingStore.stopLoading()
     isSimulating.value = false
     nodes.value.forEach((node) => {
       if (node.type === 'valuationSink') {
@@ -489,9 +539,42 @@ function clearHighlight() {
 // ────────────────────────────────────────────────────────────
 // Lifecycle
 // ────────────────────────────────────────────────────────────
-onMounted(() => {
-  // Initialize with Term Life 20Y Preset
-  loadPreset('term_life_20y')
+onMounted(async () => {
+  const projectId = route.params.id
+  if (projectId) {
+    try {
+      const response = await projectApi.listBlueprints(projectId)
+      const contracts = response.data || response
+      if (contracts && contracts.length > 0) {
+        const contract = contracts[0] // Load latest/first contract
+        const blueprint = contract.blueprint_json
+        
+        // Populate nodes and edges from blueprint
+        if (blueprint.nodes && blueprint.edges) {
+          // If nodes don't have positions (e.g. fresh from wizard preset), auto-layout them
+          const needsLayout = blueprint.nodes.some(n => !n.position)
+          if (needsLayout) {
+            const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(blueprint.nodes, blueprint.edges, 'LR')
+            nodes.value = layoutedNodes
+            edges.value = layoutedEdges
+          } else {
+            nodes.value = blueprint.nodes
+            edges.value = blueprint.edges
+          }
+          nextTick(() => fitView({ padding: 0.2, duration: 400 }))
+        } else {
+          loadPreset('term_life_20y')
+        }
+      } else {
+        loadPreset('term_life_20y')
+      }
+    } catch (err) {
+      console.error("Failed to fetch blueprint:", err)
+      loadPreset('term_life_20y')
+    }
+  } else {
+    loadPreset('term_life_20y')
+  }
 
   resizeObserver = new ResizeObserver(() => {
     cashFlowChart?.resize()
@@ -511,21 +594,24 @@ onUnmounted(() => {
 
 <template>
   <div class="h-[calc(100vh-80px)] flex flex-col bg-[#0B0F19] text-slate-100 overflow-hidden relative">
+    <LoadingOverlay />
 
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 1. TOP TOOLBAR & PRESET SELECTOR                        -->
     <!-- ═══════════════════════════════════════════════════════ -->
     <header class="h-14 px-6 border-b border-white/[0.06] bg-[#0F172A] flex items-center justify-between flex-shrink-0 z-20">
       <div class="flex items-center space-x-4">
-        <div class="flex items-center space-x-2">
-          <div class="h-8 w-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
-            </svg>
+        <div class="flex items-center space-x-3">
+          <router-link to="/" class="h-8 w-8 rounded hover:bg-white/[0.05] flex items-center justify-center text-slate-400 hover:text-white transition-colors" title="Back to Dashboard">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-left"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+          </router-link>
+          
+          <div class="h-10 w-10 rounded-xl flex-shrink-0 shadow-md border border-white/[0.05] relative overflow-hidden bg-[#070b14]">
+            <img src="/logo.jpg" alt="Actura Mascot" class="absolute w-[220%] h-[220%] max-w-none -bottom-[15%] -right-[20%]" />
           </div>
-          <div>
-            <h1 class="text-sm font-semibold text-white tracking-tight">Contract Logic Blueprint Builder</h1>
-            <p class="text-[10px] text-slate-500">Visual DAG modeling for insurance cash flow graphs</p>
+          <div class="min-w-0 flex-1">
+            <h1 class="text-sm font-semibold text-white tracking-tight">Actura</h1>
+            <p class="text-xs text-slate-500 font-medium truncate">Actuarial Valuation & Risk Platform</p>
           </div>
         </div>
 
@@ -600,16 +686,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <!-- Error Banner -->
-    <div v-if="simulationError" class="px-6 py-2 bg-rose-500/10 border-b border-rose-500/20 text-rose-400 text-xs flex items-center justify-between">
-      <div class="flex items-center space-x-2">
-        <span class="h-2 w-2 rounded-full bg-rose-400 animate-pulse"></span>
-        <span>{{ simulationError }}</span>
-      </div>
-      <button @click="simulationError = null" class="text-slate-400 hover:text-white p-1">
-        <X class="w-3.5 h-3.5" />
-      </button>
-    </div>
+    <ErrorBanner />
 
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 2. MAIN WORKSPACE: PALETTE + CANVAS                     -->
@@ -651,6 +728,17 @@ onUnmounted(() => {
 
       <!-- Center: Vue Flow Canvas -->
       <main class="flex-1 h-full relative" @drop="onDrop" @dragover="onDragOver">
+        <div v-if="nodes.length === 0" class="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+          <EmptyState 
+            title="Canvas is Empty" 
+            description="Drag nodes from the palette on the left to start building your actuarial blueprint."
+            class="pointer-events-auto"
+          >
+            <template #icon>
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-box select-none"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+            </template>
+          </EmptyState>
+        </div>
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"

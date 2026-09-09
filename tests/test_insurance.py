@@ -5,7 +5,7 @@ Tests for InsurancePricer: NSP calculations for all product types.
 import pytest
 
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.pricing.insurance import InsurancePricer
+from actuary_engine.domain.pricing.insurance import InsurancePricer
 
 
 class TestInsurancePricing:

@@ -7,8 +7,8 @@ import pandas as pd
 
 from actuary_engine.models.contracts import PolicyContract, ProductType
 from actuary_engine.projections.cash_flow import CashFlowProjector
-from actuary_engine.pricing.premium import LevelPremiumCalculator
-from actuary_engine.tables.commutation import CommutationFunctions
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.tables.commutation import CommutationFunctions
 
 
 class TestCashFlowProjection:

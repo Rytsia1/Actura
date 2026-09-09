@@ -5,7 +5,7 @@ Tests for MortalityTable: CSV loading, life table computation, and survival prob
 import numpy as np
 import pytest
 
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 class TestMortalityTableLoading:

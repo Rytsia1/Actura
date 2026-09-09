@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 from actuary_engine.api.schemas import ContractGraphPayload, GraphEdgeData, GraphNodeData
 from actuary_engine.valuation.graph_parser import ContractGraphSimulator
 

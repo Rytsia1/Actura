@@ -13,17 +13,17 @@ import time
 import numpy as np
 import pytest
 
-from actuary_engine.curves.yield_curve import MarketYieldCurve
+from actuary_engine.domain.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.stochastic._kernels import (
+from actuary_engine.domain.stochastic._kernels import (
     _simulate_cir_kernel,
     _simulate_vasicek_kernel,
     _stochastic_liability_kernel,
 )
-from actuary_engine.stochastic.esg import VasicekESG, VasicekParams
-from actuary_engine.stochastic.esg_advanced import CIRModel
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
+from actuary_engine.domain.stochastic.esg_advanced import CIRModel
+from actuary_engine.domain.tables.registry import table_registry
 from actuary_engine.valuation._kernels import _portfolio_batch_rollout_kernel, _rollback_gpv_kernel
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 

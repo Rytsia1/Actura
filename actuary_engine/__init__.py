@@ -7,8 +7,8 @@ prospective reserves, stochastic risk simulation, market yield curves, and IFRS 
 
 __version__ = "0.3.0"
 
-from actuary_engine.curves.survival import SurvivalCurve
-from actuary_engine.curves.yield_curve import MarketYieldCurve
+from actuary_engine.domain.curves.survival import SurvivalCurve
+from actuary_engine.domain.curves.yield_curve import MarketYieldCurve
 from actuary_engine.models.assumptions import (
     ExpenseAssumption,
     InterestAssumption,
@@ -17,36 +17,36 @@ from actuary_engine.models.assumptions import (
     ValuationAssumptions,
 )
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.pricing.annuity import AnnuityPricer
-from actuary_engine.pricing.insurance import InsurancePricer
-from actuary_engine.pricing.premium import LevelPremiumCalculator, PremiumResult
+from actuary_engine.domain.pricing.annuity import AnnuityPricer
+from actuary_engine.domain.pricing.insurance import InsurancePricer
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator, PremiumResult
 from actuary_engine.projections.cash_flow import CashFlowProjector
-from actuary_engine.stochastic.dynamic_lapse import DynamicLapseModel, DynamicLapseParams
-from actuary_engine.stochastic.esg import VasicekESG, VasicekParams
-from actuary_engine.stochastic.esg_advanced import (
+from actuary_engine.domain.stochastic.dynamic_lapse import DynamicLapseModel, DynamicLapseParams
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
+from actuary_engine.domain.stochastic.esg_advanced import (
     CIRModel,
     CIRParams,
     HullWhite1FModel,
     HullWhiteParams,
 )
-from actuary_engine.stochastic.lee_carter import (
+from actuary_engine.domain.stochastic.lee_carter import (
     LeeCarterFitResult,
     LeeCarterForecastSummary,
     LeeCarterModel,
 )
-from actuary_engine.stochastic.monte_carlo import (
+from actuary_engine.domain.stochastic.monte_carlo import (
     RiskMetricsResult,
     StochasticValuationEngine,
 )
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.tables.mortality_table import MortalityTable
-from actuary_engine.tables.parsers import (
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.parsers import (
     TableParsingError,
     parse_csv_mortality_table,
     parse_mortality_file,
     parse_xtbml_mortality_table,
 )
-from actuary_engine.tables.registry import TableMetadata, TableRegistry, table_registry
+from actuary_engine.domain.tables.registry import TableMetadata, TableRegistry, table_registry
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 from actuary_engine.valuation.ifrs17 import (
     IFRS17CohortClassification,

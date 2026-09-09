@@ -3,13 +3,13 @@ import tracemalloc
 import pytest
 import numpy as np
 
-from actuary_engine.pricing.insurance import InsurancePricer
+from actuary_engine.domain.pricing.insurance import InsurancePricer
 from actuary_engine.models.assumptions import InterestAssumption
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.stochastic.monte_carlo import StochasticValuationEngine
-from actuary_engine.stochastic.esg import VasicekESG, VasicekParams
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.stochastic.monte_carlo import StochasticValuationEngine
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 from tests.conftest import DISCOUNT_RATE
 
 def benchmark_workload(model_func, *args, **kwargs):

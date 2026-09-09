@@ -4,8 +4,11 @@ This document summarizes the rigorous validation framework securing the `actuary
 
 ## Deterministic Validation
 
-* **Analytical Benchmark:** The deterministic pricing models (e.g., `WholeLife`) are tested against hard-coded, mathematically provable benchmarks (e.g., $123,456.78$).
-* **Implementation:** Validated in `tests/validation/test_whole_life.py` utilizing `numpy.isclose()` with a relative tolerance of `rtol=1e-7`. This ensures the engine matches standard static spreadsheet outputs exactly, accounting for valid floating-point arithmetic variations.
+* **Analytical Benchmark:** The deterministic pricing models (e.g., `WholeLife` and `Term`) are tested against hard-coded, mathematically provable benchmarks.
+* **Implementation:** Validated in `tests/validation/test_whole_life.py` and `tests/validation/test_term.py` utilizing `numpy.isclose()`.
+* **Zero Tolerance Policy:** We enforce a strict `$0.01` escalation rule for deterministic tests. For deterministic EPV/BEL, we use `rtol=1e-12` (and `atol=1e-12`). This guarantees that if a floating-point error exists in the base survival/discounting recursion, we catch it immediately before it scales to thousands of dollars over 100,000 paths.
+
+**Note:** Stochastic validation is currently on hold until the deterministic foundation is proven with zero tolerance for error.
 
 ## Stochastic Reproducibility
 

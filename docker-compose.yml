@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ─────────────────────────────────────────────────────────
   # Backend Services
@@ -10,24 +8,24 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - PYTHONUNBUFFERED=1
-      - DATABASE_URL=${DATABASE_URL:-sqlite:///jobs.db}
     depends_on:
       db:
         condition: service_healthy
-    profiles:
-      - dev
-      - prod
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=${PORT:-8000}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actura_user}:${POSTGRES_PASSWORD:-actura_password}@db:5432/${POSTGRES_DB:-actura_db}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-actura_super_secret_development_key}
 
   # ─────────────────────────────────────────────────────────
   # Database Services
   # ─────────────────────────────────────────────────────────
   db:
     image: postgres:15-alpine
+    container_name: actura_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-actura_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-actura_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-actura_password}
       POSTGRES_DB: ${POSTGRES_DB:-actura_db}
     ports:
       - "5432:5432"
@@ -35,12 +33,9 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-actura_user} -d ${POSTGRES_DB:-actura_db}"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
-    profiles:
-      - prod
-      - postgres-dev
 
   # ─────────────────────────────────────────────────────────
   # Frontend Services
@@ -49,14 +44,11 @@ services:
     build:
       context: ./frontend
       args:
-        - VITE_API_URL=http://localhost:8000
+        - VITE_API_URL=http://localhost:8000/api/v1
     ports:
       - "3000:80"
     depends_on:
       - backend
-    profiles:
-      - dev
-      - prod
 
 volumes:
   postgres_data:

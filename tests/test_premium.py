@@ -5,7 +5,7 @@ Tests for LevelPremiumCalculator: annual net premiums via equivalence principle.
 import pytest
 
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.pricing.premium import LevelPremiumCalculator, PremiumResult
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator, PremiumResult
 
 
 class TestEquivalencePrinciple:

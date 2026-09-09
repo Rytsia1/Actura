@@ -9,15 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 import numpy as np
 
-from actuary_engine.api.main import app
-from actuary_engine.tables.mortality_table import MortalityTable
-from actuary_engine.tables.parsers import (
+from actuary_engine.main import app
+from actuary_engine.domain.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.parsers import (
     TableParsingError,
     parse_csv_mortality_table,
     parse_mortality_file,
     parse_xtbml_mortality_table,
 )
-from actuary_engine.tables.registry import TableMetadata, TableRegistry, table_registry
+from actuary_engine.domain.tables.registry import TableMetadata, TableRegistry, table_registry
 
 
 @pytest.fixture

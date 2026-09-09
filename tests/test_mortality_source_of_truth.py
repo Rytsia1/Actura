@@ -12,17 +12,17 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 from actuary_engine.models.assumptions import InterestAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.pricing.insurance import InsurancePricer
-from actuary_engine.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.pricing.insurance import InsurancePricer
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
 from actuary_engine.projections.cash_flow import CashFlowProjector
-from actuary_engine.stochastic.esg import VasicekESG, VasicekParams
-from actuary_engine.stochastic.monte_carlo import StochasticValuationEngine
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.tables.mortality_table import MortalityTable
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
+from actuary_engine.domain.stochastic.monte_carlo import StochasticValuationEngine
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.registry import table_registry
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 from actuary_engine.valuation.ifrs17 import IFRS17Engine
 from actuary_engine.valuation.portfolio import PortfolioValuationEngine

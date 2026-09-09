@@ -17,13 +17,13 @@ import pytest
 
 from actuary_engine.models.assumptions import ExpenseAssumption, LapseAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.stochastic.dynamic_lapse import DynamicLapseModel, DynamicLapseParams
-from actuary_engine.stochastic.esg import VasicekESG, VasicekParams
-from actuary_engine.stochastic.monte_carlo import (
+from actuary_engine.domain.stochastic.dynamic_lapse import DynamicLapseModel, DynamicLapseParams
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
+from actuary_engine.domain.stochastic.monte_carlo import (
     RiskMetricsResult,
     StochasticValuationEngine,
 )
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 from actuary_engine.models.assumptions import InterestAssumption
 

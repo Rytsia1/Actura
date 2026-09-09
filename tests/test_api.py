@@ -5,7 +5,7 @@ Tests for the FastAPI valuation endpoints.
 import pytest
 from fastapi.testclient import TestClient
 
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 
 
 @pytest.fixture(scope="session")

@@ -74,6 +74,14 @@ httpClient.interceptors.response.use(
       const status = error.response.status
       const data = error.response.data
 
+      // Handle the new structured backend ErrorResponse
+      if (data && data.error && typeof data.error === 'string') {
+        const customErr = new ActuaryApiError(data.message || `Backend Error (${data.error})`, status, data.details)
+        customErr.code = data.error
+        customErr.timestamp = data.timestamp
+        return Promise.reject(customErr)
+      }
+
       let formattedMessage = 'An unexpected server error occurred.'
 
       // FastAPI 401 Unauthorized (Auth Failed)

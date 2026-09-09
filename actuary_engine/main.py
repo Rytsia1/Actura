@@ -1,0 +1,1986 @@
+"""
+FastAPI application layer for the Actuarial Valuation & Risk Engine.
+
+Provides REST and WebSocket endpoints for:
+- Health check & mortality table metadata (/api/v1/health, /api/v1/tables)
+- Dynamic mortality table file upload & registry (/api/v1/tables/upload)
+- Deterministic life insurance valuation (/api/v1/valuation/deterministic)
+- Stochastic Monte Carlo valuation with Vasicek ESG (/api/v1/valuation/stochastic)
+- Asynchronous large-scale simulation dispatch (/api/v1/valuation/stochastic/async)
+- Polling status endpoint (/api/v1/valuation/stochastic/status/{job_id})
+- Bidirectional WebSocket progress streaming (/ws/simulations/{job_id})
+- Seriatim batch portfolio valuations (/api/v1/valuation/portfolio/csv)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import logging
+import time
+from collections.abc import Callable, Coroutine
+from typing import Any, Optional, Union
+
+import numpy as np
+import pandas as pd
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+import queue
+
+from actuary_engine.api.worker import _cpu_worker_task
+from actuary_engine.api.job_manager import JobStatus, job_manager
+from actuary_engine.api.dependencies import get_current_user, RoleChecker
+from actuary_engine.api.auth import router as auth_router
+from fastapi import Depends
+from actuary_engine.api.schemas import (
+    AsyncJobCreateResponse,
+    AsyncJobStatusResponse,
+    DeterministicValuationRequest,
+    DeterministicValuationResponse,
+    ESGModelType,
+    ESGSimulationRequest,
+    ESGSimulationResponse,
+    IFRS17ValuationRequest,
+    IFRS17ValuationResponse,
+    LeeCarterForecastRequest,
+    LeeCarterForecastResponse,
+    PortfolioValuationJSONRequest,
+    PortfolioValuationResponse,
+    QuantileTrajectory,
+    SensitivityRequest,
+    SensitivityResponse,
+    StochasticValuationRequest,
+    StochasticValuationResponse,
+    StressTestRequest,
+    StressTestResponse,
+    ContractGraphPayload,
+    GuidedTermLifeRequest,
+    GraphNodeData,
+    GraphEdgeData,
+    SimulateGraphResponse,
+    TableListItem,
+    TableUploadResponse,
+    TerminalDistribution,
+    ValidationResult,
+    ValidationIssue,
+    ValidationSeverity,
+    AssumptionCreate,
+    AssumptionVersionCreate,
+    AssumptionRead,
+    AssumptionStatusUpdate,
+    ScenarioCreate,
+    ScenarioUpdate,
+    ScenarioRead,
+    BaseModelCreate,
+    BaseModelRead,
+    ScenarioValidationResult,
+    ScenarioExecutionResponse,
+    SensitivityAnalysisRequest,
+    SensitivityAnalysisResponse,
+    SensitivityShockConfig,
+    RunComparisonRequest,
+    RunComparisonResponse,
+    ModelHealthRequest,
+    ModelHealthReport,
+    BaseModelUpdate,
+    ModelStatusUpdate,
+    AuditLogRead,
+)
+from actuary_engine.infrastructure.assumption_repo import assumption_repo
+from actuary_engine.infrastructure.scenario_repo import scenario_repo
+from actuary_engine.infrastructure.audit_repo import audit_repo
+from actuary_engine.services.scenario_service import scenario_service
+from actuary_engine.services.sensitivity_service import sensitivity_service
+from actuary_engine.services.run_comparison_service import run_comparison_service
+from actuary_engine.services.export_service import export_service, JobNotFoundError, JobNotExportableError
+from actuary_engine.services.model_health_service import model_health_service
+from actuary_engine.domain.curves.yield_curve import MarketYieldCurve
+from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
+from actuary_engine.models.contracts import PolicyContract, ProductType
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.stochastic.dynamic_lapse import DynamicLapseModel
+from actuary_engine.domain.stochastic.esg import VasicekESG, VasicekParams
+from actuary_engine.domain.stochastic.esg_advanced import CIRModel, CIRParams, HullWhite1FModel
+from actuary_engine.domain.stochastic.lee_carter import LeeCarterModel
+from actuary_engine.domain.stochastic.monte_carlo import (
+    StochasticValuationEngine,
+    compute_quantile_trajectory,
+    compute_terminal_distribution,
+    sample_representative_paths,
+)
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.parsers import TableParsingError, parse_mortality_file
+from actuary_engine.domain.tables.registry import TableMetadata, table_registry
+from actuary_engine.valuation.graph_parser import ContractGraphSimulator
+from actuary_engine.valuation.gpv import GrossPremiumValuation
+from actuary_engine.valuation.ifrs17 import IFRS17Engine
+from actuary_engine.valuation.portfolio import PortfolioSummary, PortfolioValuationEngine
+from actuary_engine.valuation.reserves import ReserveCalculator
+from actuary_engine.valuation.sensitivity import SensitivityEngine
+from actuary_engine.valuation.blueprint_validator import BlueprintValidator
+
+from actuary_engine.infrastructure.database import engine, Base
+from actuary_engine.infrastructure import models
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
+
+logger = logging.getLogger("actuary_engine.api")
+
+process_pool_executor = ProcessPoolExecutor(max_workers=2)
+
+def get_process_pool_executor() -> ProcessPoolExecutor:
+    global process_pool_executor
+    if (
+        process_pool_executor is None
+        or getattr(process_pool_executor, "_shutdown_thread", False)
+        or getattr(process_pool_executor, "_broken", False)
+    ):
+        process_pool_executor = ProcessPoolExecutor(max_workers=2)
+    return process_pool_executor
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    if process_pool_executor and not getattr(process_pool_executor, "_shutdown_thread", False):
+        process_pool_executor.shutdown(wait=True)
+
+# Initialize FastAPI App
+app = FastAPI(
+    title="Actuarial Valuation & Risk Engine API",
+    version="0.3.0",
+    description="Production-grade API for life insurance liabilities, dynamic mortality tables, reserves, and Monte Carlo risk analytics with WebSockets.",
+    lifespan=lifespan,
+)
+
+# Configure CORS for Vue 3 frontend
+app.include_router(auth_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "*",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/api/v1/health", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def health_check() -> dict[str, Any]:
+    """Health check endpoint."""
+    soa_table = table_registry.get_table("soa_ilt")
+    db_healthy = job_manager.check_db_health()
+    status = "healthy" if db_healthy else "unhealthy"
+    
+    return {
+        "status": status,
+        "database_connected": db_healthy,
+        "service": "actuary-engine-api",
+        "table": soa_table.name,
+        "omega": str(soa_table.omega),
+        "registered_tables_count": len(table_registry.list_tables()),
+    }
+
+
+# ────────────────────────────────────────────────────────────
+# Mortality Table Registry & Upload Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/tables", response_model=list[TableListItem], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def list_mortality_tables() -> list[TableListItem]:
+    """List all registered mortality tables (both default and custom uploaded)."""
+    return [
+        TableListItem(
+            table_id=m.table_id,
+            name=m.name,
+            description=m.description,
+            min_age=m.min_age,
+            max_age=m.max_age,
+            omega=m.omega,
+            radix=m.radix,
+            is_builtin=m.is_builtin,
+            sample_qx=m.sample_qx,
+        )
+        for m in table_registry.list_tables()
+    ]
+
+
+@app.get("/api/v1/tables/soa_ilt", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_soa_ilt_info() -> dict[str, object]:
+    """Retrieve metadata and sample mortality rates for SOA Illustrative Life Table."""
+    table = table_registry.get_table("soa_ilt")
+    sample_ages = [20, 30, 40, 50, 60, 70, 80, 90, 100]
+    sample_qx = {f"q{age}": round(table.get_tqx(age, 1), 6) for age in sample_ages}
+    return {
+        "name": table.name,
+        "min_age": table.min_age,
+        "max_age": table.max_age,
+        "omega": table.omega,
+        "radix": table.radix,
+        "sample_qx": sample_qx,
+    }
+
+
+@app.get("/api/v1/tables/{table_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_table_info(table_id: str) -> dict[str, object]:
+    """Retrieve metadata for a specific mortality table by ID."""
+    try:
+        table = table_registry.get_table(table_id)
+        meta = table_registry.get_metadata(table_id)
+        return meta.model_dump()
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.post("/api/v1/tables/upload", response_model=TableUploadResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+async def upload_mortality_table(
+    file: UploadFile = File(..., description="Mortality table file (CSV, TSV, or SOA XTbML format)."),
+    table_name: Optional[str] = Form(None, description="Custom display name for the table."),
+    table_description: Optional[str] = Form("", description="Optional notes or source citation."),
+) -> TableUploadResponse:
+    """Upload, parse, validate, and register a custom mortality table in the registry."""
+    try:
+        contents = await file.read()
+        filename = file.filename or "custom_table.csv"
+        parsed_table = parse_mortality_file(
+            filename=filename,
+            content=contents,
+            name=table_name,
+        )
+
+        clean_id = (table_name or filename).lower().strip().replace(" ", "_").replace(".", "_")
+        clean_id = "".join(c for c in clean_id if c.isalnum() or c == "_")
+        if not clean_id:
+            clean_id = f"custom_table_{len(table_registry.list_tables())}"
+
+        meta = table_registry.register_table(
+            table_id=clean_id,
+            table=parsed_table,
+            description=table_description or f"Custom uploaded table from {filename}",
+            is_builtin=False,
+        )
+
+        return TableUploadResponse(
+            status="success",
+            table_id=meta.table_id,
+            table_name=meta.name,
+            min_age=meta.min_age,
+            max_age=meta.max_age,
+            rows_count=parsed_table.num_ages,
+            is_builtin=meta.is_builtin,
+            sample_qx=meta.sample_qx,
+        )
+    except TableParsingError as e:
+        raise HTTPException(status_code=400, detail=f"Table validation error: {e}") from e
+    except Exception as e:
+        logger.exception("Mortality table upload failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Upload processing failed: {e}") from e
+
+
+@app.delete("/api/v1/tables/{table_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def delete_mortality_table(table_id: str) -> dict[str, str]:
+    """Delete a custom registered mortality table."""
+    try:
+        deleted = table_registry.delete_table(table_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Table '{table_id}' not found.")
+        return {"status": "success", "message": f"Table '{table_id}' deleted successfully."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+# ────────────────────────────────────────────────────────────
+# Valuation Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/valuation/deterministic", response_model=DeterministicValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_deterministic(request: DeterministicValuationRequest) -> DeterministicValuationResponse:
+    """Run deterministic valuation computing net level premiums, prospective/retrospective reserves, and GPV rollout."""
+    try:
+        table = table_registry.get_table(request.table_id or "soa_ilt")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    try:
+        eff_term = None if request.product_type == ProductType.WHOLE_LIFE else request.term
+        contract = PolicyContract(
+            product_type=request.product_type,
+            issue_age=request.issue_age,
+            term=eff_term,
+            sum_assured=request.sum_assured,
+            premium_paying_term=request.premium_paying_term,
+        )
+        contract.validate_against_table(table)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    try:
+        interest = InterestAssumption(annual_rate=request.interest_rate)
+        comm = CommutationFunctions(table, interest)
+        prem_calc = LevelPremiumCalculator(comm)
+
+        # 1. Net Level Premium Pricing & Equivalence
+        prem_res = prem_calc.price_contract(contract)
+        net_premium = prem_res.annual_premium
+        nsp = prem_res.nsp
+        annuity_factor = prem_res.annuity_factor
+
+        # 2. Derive gross premium if not explicitly supplied (default 20% loading)
+        gross_premium = request.gross_premium if request.gross_premium is not None else net_premium * 1.20
+
+        # 3. Reserve Calculation (Prospective & Retrospective)
+        res_calc = ReserveCalculator(comm)
+        net_res_df = res_calc.reserve_profile(contract, annual_premium=net_premium, method="both")
+
+        # 4. Gross Premium Valuation (GPV)
+        expense = request.expense or ExpenseAssumption(
+            percent_of_premium_first=0.35,
+            percent_of_premium_renewal=0.05,
+            per_policy_first=200.0,
+            per_policy_renewal=20.0,
+        )
+        lapse = request.lapse or LapseAssumption(flat_annual_rate=0.03)
+
+        gpv_engine = GrossPremiumValuation(
+            table=table,
+            interest=interest,
+            expense=expense,
+            lapse=lapse,
+        )
+
+        gpv_cf_df = gpv_engine.project(contract, gross_premium=gross_premium)
+        bel = gpv_engine.best_estimate_liability(contract, gross_premium=gross_premium)
+        gpv_res_df = gpv_engine.gross_reserve_profile(contract, gross_premium=gross_premium)
+
+        # Merge reserve trajectories into JSON-friendly format
+        merged_res = net_res_df.merge(gpv_res_df[["duration", "gross_reserve"]], on="duration", how="left")
+        reserve_profile_data = []
+        for _, row in merged_res.iterrows():
+            reserve_profile_data.append({
+                "duration": int(row["duration"]),
+                "age": int(row["age"]),
+                "reserve_prospective": round(float(row["reserve_prospective"]), 2),
+                "reserve_retrospective": round(float(row["reserve_retrospective"]), 2),
+                "gross_reserve": round(float(row.get("gross_reserve", 0.0)), 2),
+            })
+
+        # Prepare cash flow breakdown
+        cash_flows = []
+        for _, row in gpv_cf_df.iterrows():
+            cash_flows.append({
+                "year": int(row["year"]),
+                "age": int(row["age"]),
+                "inforce_boy": round(float(row["inforce_boy"]), 6),
+                "premium_income": round(float(row["premium_income"]), 2),
+                "death_claims": round(float(row["death_claims"]), 2),
+                "maturity_benefit": round(float(row["maturity_benefit"]), 2),
+                "total_expense": round(float(row["total_expense"]), 2),
+                "net_liability_cf": round(float(row["net_liability_cf"]), 2),
+                "pv_net_liability": round(float(row["pv_net_liability"]), 2),
+            })
+
+        response = DeterministicValuationResponse(
+            product_type=contract.product_type.value,
+            issue_age=contract.issue_age,
+            term=contract.term,
+            sum_assured=contract.sum_assured,
+            annual_net_premium=round(net_premium, 2),
+            annual_gross_premium=round(gross_premium, 2),
+            nsp=round(nsp, 2),
+            annuity_factor=round(annuity_factor, 4),
+            bel=round(bel, 2),
+            table_id=request.table_id or "soa_ilt",
+            table_name=table.name,
+            reserve_profile=reserve_profile_data,
+            cash_flows=cash_flows,
+        )
+
+        import time
+        from sqlalchemy import update
+        
+        run_meta_dict = {
+            "engine_version": "1.0.0",
+            "execution_time": time.time(),
+            "valuation_type": "Deterministic",
+            "scenario": "Base",
+        }
+        
+        job = job_manager.create_job(
+            total_paths=1,
+            run_metadata=run_meta_dict,
+            original_request=request.model_dump()
+        )
+        
+        stmt = (
+            update(job_manager.jobs_table)
+            .where(job_manager.jobs_table.c.job_id == job.job_id)
+            .values(
+                status="COMPLETED",
+                progress=100.0,
+                completed_paths=1,
+                result=json.dumps(response.model_dump() if hasattr(response, 'model_dump') else response.dict()),
+                updated_at=time.time()
+            )
+        )
+        with job_manager.engine.begin() as conn:
+            conn.execute(stmt)
+
+        return response
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+async def _compute_stochastic_valuation_core(
+    request: StochasticValuationRequest,
+    progress_callback: Optional[Callable[[int, int, dict[str, Any]], Coroutine[Any, Any, None]]] = None,
+) -> StochasticValuationResponse:
+    """Internal helper to compute stochastic Monte Carlo valuation with chunking and fan chart analytics."""
+    # Handle seed generation if not explicitly provided
+    if request.seed is None:
+        import random
+        request.seed = random.randint(1, 2**31 - 1)
+
+    # Validate against table constraints
+    table = table_registry.get_table(request.table_id or "soa_ilt")
+    contract = PolicyContract(
+        product_type=request.product_type,
+        issue_age=request.issue_age,
+        term=request.term,
+        sum_assured=request.sum_assured,
+        premium_paying_term=request.premium_paying_term,
+    )
+
+    if request.gross_premium is not None:
+        gross_premium = request.gross_premium
+    else:
+        comm = CommutationFunctions(table, InterestAssumption(annual_rate=request.vasicek.r0))
+        calc = LevelPremiumCalculator(comm)
+        prem_res = calc.price_contract(contract)
+        gross_premium = prem_res.annual_premium * 1.25
+
+    esg = VasicekESG(params=request.vasicek, seed=request.seed)
+    dyn_lapse = DynamicLapseModel(params=request.dynamic_lapse) if request.dynamic_lapse is not None else None
+
+    expense = request.expense or ExpenseAssumption(
+        percent_of_premium_first=0.35,
+        percent_of_premium_renewal=0.05,
+        per_policy_first=200.0,
+        per_policy_renewal=20.0,
+    )
+
+    engine = StochasticValuationEngine(
+        table=table,
+        esg=esg,
+        expense=expense,
+        dynamic_lapse=dyn_lapse,
+    )
+
+    chunk_size = min(1000, max(250, request.n_scenarios // 10))
+    stoch_res, bel_dist = await engine.evaluate_liability_distribution_async(
+        contract=contract,
+        gross_premium=gross_premium,
+        n_scenarios=request.n_scenarios,
+        chunk_size=chunk_size,
+        seed=request.seed,
+        progress_callback=progress_callback,
+    )
+
+    # Fan chart analytics for short rates
+    n_years = contract.term if contract.term is not None else (table.omega - contract.issue_age)
+    rates_paths = esg.simulate_paths(
+        n_scenarios=min(2500, request.n_scenarios),
+        n_years=n_years,
+        dt=1.0,
+        method="exact",
+        seed=request.seed,
+    )
+
+    # 1. Server-side quantile extraction across projection timesteps
+    quantiles_dict = compute_quantile_trajectory(rates_paths)
+    quantiles_obj = QuantileTrajectory(**quantiles_dict)
+
+    # 2. Server-side terminal distribution and histogram binning (40 bins)
+    term_dist_dict = compute_terminal_distribution(stoch_res.scenario_bel, bins=40)
+    term_dist_obj = TerminalDistribution(**term_dist_dict)
+
+    # 3. Compressed representative sample traces (max 15 paths)
+    sample_paths = sample_representative_paths(rates_paths, max_paths=15)
+
+    timesteps: list[Union[int, str]] = list(range(rates_paths.shape[1]))
+
+    # Summary KPI dictionary
+    summary_kpis = {
+        "mean_bel": round(stoch_res.mean_bel, 2),
+        "std_bel": round(stoch_res.std_bel, 2),
+        "min_bel": round(stoch_res.min_bel, 2),
+        "max_bel": round(stoch_res.max_bel, 2),
+        "var_95": round(stoch_res.var_95, 2),
+        "var_99": round(stoch_res.var_99, 2),
+        "cvar_95": round(stoch_res.cvar_95, 2),
+        "cvar_99": round(stoch_res.cvar_99, 2),
+        "skewness": term_dist_dict["skewness"],
+    }
+
+    # Backward-compatible fan_chart_rates and liability_histogram format
+    fan_chart_rates: list[dict[str, object]] = []
+    for t in range(rates_paths.shape[1]):
+        col = rates_paths[:, t]
+        fan_chart_rates.append({
+            "year": t,
+            "p5": round(float(np.percentile(col, 5)), 5),
+            "p25": round(float(np.percentile(col, 25)), 5),
+            "p50": round(float(np.percentile(col, 50)), 5),
+            "p75": round(float(np.percentile(col, 75)), 5),
+            "p95": round(float(np.percentile(col, 95)), 5),
+            "mean": round(float(np.mean(col)), 5),
+        })
+
+    histogram_data: list[dict[str, object]] = []
+    bin_edges = term_dist_dict["bin_edges"]
+    counts = term_dist_dict["counts"]
+    for i in range(len(counts)):
+        histogram_data.append({
+            "bin_start": bin_edges[i],
+            "bin_end": bin_edges[i + 1],
+            "bin_mid": round(float((bin_edges[i] + bin_edges[i + 1]) / 2.0), 2),
+            "count": counts[i],
+        })
+
+    return StochasticValuationResponse(
+        timesteps=timesteps,
+        quantiles=quantiles_obj,
+        terminal_distribution=term_dist_obj,
+        sample_paths=sample_paths,
+        summary_kpis=summary_kpis,
+        mean_bel=round(stoch_res.mean_bel, 2),
+        std_bel=round(stoch_res.std_bel, 2),
+        min_bel=round(stoch_res.min_bel, 2),
+        max_bel=round(stoch_res.max_bel, 2),
+        var_95=round(stoch_res.var_95, 2),
+        var_99=round(stoch_res.var_99, 2),
+        cvar_95=round(stoch_res.cvar_95, 2),
+        cvar_99=round(stoch_res.cvar_99, 2),
+        percentiles={k: round(v, 2) for k, v in stoch_res.percentiles.items()},
+        fan_chart_rates=fan_chart_rates,
+        liability_histogram=histogram_data,
+    )
+
+
+@app.post("/api/v1/valuation/stochastic", response_model=StochasticValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+async def evaluate_stochastic(request: StochasticValuationRequest) -> StochasticValuationResponse:
+    """Synchronous endpoint for Level 4 Monte Carlo liability valuation and tail risk analytics."""
+    try:
+        return await _compute_stochastic_valuation_core(request)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Stochastic valuation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Valuation error: {e}") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Asynchronous Simulation Pipeline & WebSocket Streaming
+# ────────────────────────────────────────────────────────────
+
+async def _run_async_simulation_task(job_id: str, request: StochasticValuationRequest) -> None:
+    """Background task orchestrating chunked simulation execution and state updates."""
+    job_manager.set_processing(job_id)
+
+    try:
+        table = table_registry.get_table(request.table_id or "soa_ilt")
+        table_dict = {
+            "ages": table.ages.tolist(),
+            "qx": table.qx.tolist(),
+            "name": table.name,
+            "radix": table.radix
+        }
+        request_dict = request.model_dump()
+        
+        m = multiprocessing.Manager()
+        progress_queue = m.Queue()
+
+        async def _poll_progress():
+            while True:
+                try:
+                    msg = progress_queue.get_nowait()
+                    await job_manager.update_progress(
+                        job_id=job_id,
+                        completed_paths=msg["completed"],
+                        total_paths=msg["total"],
+                        partial_metrics=msg["partial_metrics"]
+                    )
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+
+        poll_task = asyncio.create_task(_poll_progress())
+
+        loop = asyncio.get_running_loop()
+        final_res_dict = await loop.run_in_executor(
+            get_process_pool_executor(),
+            _cpu_worker_task,
+            request_dict,
+            table_dict,
+            progress_queue
+        )
+
+        poll_task.cancel()
+        await job_manager.set_completed(job_id, final_res_dict)
+    except Exception as e:
+        logger.exception("Async simulation job %s failed: %s", job_id, e)
+        try:
+            poll_task.cancel()
+        except Exception:
+            pass
+        await job_manager.set_failed(job_id, str(e))
+
+
+@app.post("/api/v1/valuation/stochastic/async", response_model=AsyncJobCreateResponse, status_code=202, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+async def start_async_simulation(
+    request: StochasticValuationRequest,
+    background_tasks: BackgroundTasks,
+) -> AsyncJobCreateResponse:
+    """Enqueue a large-scale stochastic Monte Carlo simulation in the background."""
+    try:
+        table = table_registry.get_table(request.table_id or "soa_ilt")
+        contract = PolicyContract(
+            product_type=request.product_type,
+            issue_age=request.issue_age,
+            term=request.term,
+            sum_assured=request.sum_assured,
+            premium_paying_term=request.premium_paying_term,
+        )
+        contract.validate_against_table(table)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if request.seed is None:
+        import random
+        request.seed = random.randint(1, 2**31 - 1)
+
+    import time
+    import numpy as np
+    import pydantic
+    from actuary_engine.api.schemas import RunMetadata
+
+    run_metadata = RunMetadata(
+        seed=request.seed,
+        n_scenarios=request.n_scenarios,
+        product_type=request.product_type,
+        issue_age=request.issue_age,
+        term=request.term,
+        sum_assured=request.sum_assured,
+        table_id=request.table_id or "soa_ilt",
+        economic_model="VASICEK",
+        economic_parameters=request.vasicek.model_dump(),
+        creation_timestamp=time.time(),
+        dependency_versions={"numpy": np.__version__, "pydantic": pydantic.__version__}
+    )
+
+    job = job_manager.create_job(
+        total_paths=request.n_scenarios,
+        run_metadata=run_metadata.model_dump(),
+        original_request=request.model_dump()
+    )
+    background_tasks.add_task(_run_async_simulation_task, job.job_id, request)
+
+    return AsyncJobCreateResponse(
+        job_id=job.job_id,
+        status="QUEUED",
+        total_paths=job.total_paths,
+        ws_endpoint=f"/ws/simulations/{job.job_id}",
+    )
+
+
+@app.get("/api/v1/valuation/stochastic/status/{job_id}", response_model=AsyncJobStatusResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_simulation_status(job_id: str) -> AsyncJobStatusResponse:
+    """Poll the status and progress of an asynchronous simulation task."""
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Simulation job '{job_id}' not found.")
+
+    res_obj = None
+    if job.result:
+        res_obj = StochasticValuationResponse(**job.result)
+
+    return AsyncJobStatusResponse(
+        job_id=job.job_id,
+        status=job.status.value,
+        progress=round(job.progress, 1),
+        completed_paths=job.completed_paths,
+        total_paths=job.total_paths,
+        partial_metrics=job.partial_metrics,
+        result=res_obj,
+        error=job.error,
+        run_metadata=job.run_metadata,
+        original_request=job.original_request,
+    )
+
+
+@app.post("/api/v1/valuation/stochastic/rerun/{job_id}", response_model=AsyncJobCreateResponse, status_code=202, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+async def rerun_stochastic_simulation(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    new_seed: Optional[int] = None
+) -> AsyncJobCreateResponse:
+    """Rerun an existing stochastic valuation, preserving its configuration exactly."""
+    old_job = job_manager.get_job(job_id)
+    if not old_job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    
+    if not old_job.original_request:
+        raise HTTPException(status_code=400, detail="Cannot rerun job: no original request metadata found.")
+        
+    request_data = old_job.original_request.copy()
+    if new_seed is not None:
+        request_data["seed"] = new_seed
+        
+    try:
+        new_request = StochasticValuationRequest(**request_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to reconstruct request: {e}")
+        
+    return await start_async_simulation(new_request, background_tasks)
+
+
+@app.websocket("/ws/simulations/{job_id}")
+async def websocket_simulation_progress(websocket: WebSocket, job_id: str) -> None:
+    """Bidirectional WebSocket connection broadcasting incremental progress and final simulation results."""
+    await websocket.accept()
+
+    job = job_manager.get_job(job_id)
+    if not job:
+        await websocket.send_json({
+            "type": "ERROR",
+            "job_id": job_id,
+            "status": "FAILED",
+            "error": f"Job '{job_id}' not found.",
+        })
+        await websocket.close()
+        return
+
+    # If already completed or failed prior to connection
+    if job.status == JobStatus.COMPLETED:
+        await websocket.send_json({
+            "type": "COMPLETE",
+            "job_id": job_id,
+            "status": "COMPLETED",
+            "percent": 100.0,
+            "completed_paths": job.total_paths,
+            "total_paths": job.total_paths,
+            "data": job.result,
+        })
+        await websocket.close()
+        return
+    elif job.status == JobStatus.FAILED:
+        await websocket.send_json({
+            "type": "ERROR",
+            "job_id": job_id,
+            "status": "FAILED",
+            "error": job.error or "Simulation failed.",
+        })
+        await websocket.close()
+        return
+
+    queue = job_manager.subscribe(job_id)
+    try:
+        while True:
+            event = await asyncio.wait_for(queue.get(), timeout=120.0)
+            await websocket.send_json(event)
+            if event.get("type") in ("COMPLETE", "ERROR"):
+                break
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass
+    except asyncio.TimeoutError:
+        try:
+            await websocket.send_json({
+                "type": "ERROR",
+                "job_id": job_id,
+                "error": "Simulation WebSocket timed out after 120s of inactivity.",
+            })
+        except Exception:
+            pass
+    finally:
+        job_manager.unsubscribe(job_id, queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ────────────────────────────────────────────────────────────
+# Portfolio Batch Valuation Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/valuation/portfolio/csv", response_model=PortfolioValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+async def evaluate_portfolio_csv(
+    file: UploadFile = File(..., description="CSV file containing seriatim policyholder records."),
+    interest_rate: float = Form(0.05, description="Annual effective discount rate."),
+    table_id: str = Form("soa_ilt", description="Mortality table ID."),
+    expense_percent_first: float = Form(0.35, description="First-year acquisition expense % of premium."),
+    expense_percent_renewal: float = Form(0.05, description="Renewal maintenance expense % of premium."),
+    expense_per_policy_first: float = Form(200.0, description="First-year per-policy expense ($)."),
+    expense_per_policy_renewal: float = Form(20.0, description="Renewal per-policy expense ($)."),
+    flat_lapse_rate: float = Form(0.03, description="Flat annual policyholder lapse rate."),
+) -> PortfolioValuationResponse:
+    """Evaluate an entire portfolio of life insurance policies via multipart CSV file upload."""
+    try:
+        table = table_registry.get_table(table_id or "soa_ilt")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    try:
+        contents = await file.read()
+        engine = PortfolioValuationEngine(
+            table=table,
+            interest=InterestAssumption(annual_rate=interest_rate),
+            expense=ExpenseAssumption(
+                percent_of_premium_first=expense_percent_first,
+                percent_of_premium_renewal=expense_percent_renewal,
+                per_policy_first=expense_per_policy_first,
+                per_policy_renewal=expense_per_policy_renewal,
+            ),
+            lapse=LapseAssumption(flat_annual_rate=flat_lapse_rate),
+        )
+
+        df = engine.load_portfolio_df(contents)
+        res_df, summary = engine.evaluate_portfolio(df)
+
+        sample_records: list[dict[str, Any]] = [
+            {str(k): v for k, v in r.items()}
+            for r in res_df.head(25)[
+                ["policy_id", "product_type", "issue_age", "policy_duration_years", "term_years", "sum_assured", "gross_premium", "pvfb", "pvfp", "pvfe", "bel"]
+            ].to_dict(orient="records")
+        ]
+
+        return PortfolioValuationResponse(
+            total_policies=summary.total_policies,
+            total_sum_assured=summary.total_sum_assured,
+            total_pvfb=summary.total_pvfb,
+            total_pvfp=summary.total_pvfp,
+            total_pvfe=summary.total_pvfe,
+            total_bel=summary.total_bel,
+            annual_cash_flows=summary.annual_cash_flows,
+            product_breakdown=summary.product_breakdown,
+            age_breakdown=summary.age_breakdown,
+            duration_breakdown=summary.duration_breakdown,
+            sample_seriatim=sample_records,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Portfolio CSV valuation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Portfolio processing error: {e}") from e
+
+
+@app.post("/api/v1/valuation/portfolio", response_model=PortfolioValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_portfolio_json(request: PortfolioValuationJSONRequest) -> PortfolioValuationResponse:
+    """Evaluate a portfolio of life insurance policies provided as JSON records."""
+    try:
+        table = table_registry.get_table(request.table_id or "soa_ilt")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    try:
+        engine = PortfolioValuationEngine(
+            table=table,
+            interest=InterestAssumption(annual_rate=request.interest_rate),
+            expense=request.expense or ExpenseAssumption(
+                percent_of_premium_first=0.35,
+                percent_of_premium_renewal=0.05,
+                per_policy_first=200.0,
+                per_policy_renewal=20.0,
+            ),
+            lapse=request.lapse or LapseAssumption(flat_annual_rate=0.03),
+        )
+
+        raw_records = [p.model_dump() for p in request.policies]
+        raw_df = pd.DataFrame(raw_records)
+        df = engine.load_portfolio_df(raw_df)
+        res_df, summary = engine.evaluate_portfolio(df)
+
+        sample_records: list[dict[str, Any]] = [
+            {str(k): v for k, v in r.items()}
+            for r in res_df.head(25)[
+                ["policy_id", "product_type", "issue_age", "policy_duration_years", "term_years", "sum_assured", "gross_premium", "pvfb", "pvfp", "pvfe", "bel"]
+            ].to_dict(orient="records")
+        ]
+
+        return PortfolioValuationResponse(
+            total_policies=summary.total_policies,
+            total_sum_assured=summary.total_sum_assured,
+            total_pvfb=summary.total_pvfb,
+            total_pvfp=summary.total_pvfp,
+            total_pvfe=summary.total_pvfe,
+            total_bel=summary.total_bel,
+            annual_cash_flows=summary.annual_cash_flows,
+            product_breakdown=summary.product_breakdown,
+            age_breakdown=summary.age_breakdown,
+            duration_breakdown=summary.duration_breakdown,
+            sample_seriatim=sample_records,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Portfolio JSON valuation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Portfolio processing error: {e}") from e
+
+
+@app.get("/api/v1/valuation/portfolio/sample_csv", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def download_sample_portfolio_csv(n_policies: int = 1000) -> Response:
+    """Generate and return a downloadable synthetic CSV portfolio for testing."""
+    df = PortfolioValuationEngine.generate_synthetic_portfolio(n_policies=min(n_policies, 50000), seed=42)
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_bytes = csv_buffer.getvalue().encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sample_portfolio_{n_policies}.csv"},
+    )
+
+
+# ────────────────────────────────────────────────────────────
+# Lee-Carter Stochastic Mortality Forecast Endpoint
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/mortality/lee-carter/forecast", response_model=LeeCarterForecastResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def forecast_lee_carter_mortality(request: LeeCarterForecastRequest) -> LeeCarterForecastResponse:
+    """Fit Lee-Carter stochastic mortality model and project future longevity improvement rates."""
+    table_id = request.table_id or "soa_ilt"
+    try:
+        table = table_registry.get_table(table_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Mortality table '{table_id}' not found.") from e
+
+    try:
+        ages = np.arange(table.min_age, table.omega, dtype=np.int64)
+        historical_years = np.arange(request.base_year - 30, request.base_year, dtype=np.int64)
+
+        # Generate mortality surface calibrated to table
+        m_matrix = LeeCarterModel.generate_synthetic_historical_matrix(
+            ages=ages,
+            years=historical_years,
+            base_table=table,
+            annual_improvement=request.annual_improvement,
+            seed=request.seed or 42,
+        )
+
+        model = LeeCarterModel()
+        fit_result = model.fit(m_matrix, ages, historical_years)
+        summary = model.forecast_summary(
+            n_ahead=request.n_ahead,
+            n_scenarios=request.n_scenarios,
+            seed=request.seed or 42,
+        )
+
+        return LeeCarterForecastResponse(
+            table_id=table_id,
+            table_name=table.name,
+            fit=fit_result.model_dump(),
+            forecast=summary.model_dump(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Lee-Carter forecasting failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Lee-Carter modeling error: {e}") from e
+
+
+# ────────────────────────────────────────────────────────────
+# IFRS 17 / PSAK 117 Valuation Endpoint
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/valuation/ifrs17", response_model=IFRS17ValuationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_ifrs17(request: IFRS17ValuationRequest) -> IFRS17ValuationResponse:
+    """Evaluate IFRS 17 / PSAK 117 General Measurement Model (BBA) valuation."""
+    table_id = request.table_id or "soa_ilt"
+    try:
+        table = table_registry.get_table(table_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Mortality table '{table_id}' not found.") from e
+
+    try:
+        contract = PolicyContract(
+            product_type=request.product_type,
+            issue_age=request.issue_age,
+            term=request.term,
+            sum_assured=request.sum_assured,
+            premium_paying_term=request.premium_paying_term,
+        )
+        contract.validate_against_table(table)
+        interest = InterestAssumption(annual_rate=request.interest_rate)
+        expense = request.expense or ExpenseAssumption()
+        lapse = request.lapse or LapseAssumption()
+
+        engine = IFRS17Engine(
+            table=table,
+            interest=interest,
+            expense=expense,
+            lapse=lapse,
+            ra_ratio=request.ra_ratio,
+        )
+
+        val_result = engine.evaluate(
+            contract=contract,
+            gross_premium=request.gross_premium,
+        )
+
+        response = IFRS17ValuationResponse(
+            table_id=table_id,
+            table_name=table.name,
+            product_type=request.product_type,
+            initial_balance=val_result.initial_balance.model_dump(),
+            balance_sheet_schedule=val_result.balance_sheet_schedule,
+            income_statement_schedule=val_result.income_statement_schedule,
+            total_insurance_revenue=val_result.total_insurance_revenue,
+            total_csm_released=val_result.total_csm_released,
+            total_service_expenses=val_result.total_service_expenses,
+        )
+
+        import time
+        from sqlalchemy import update
+        
+        run_meta_dict = {
+            "engine_version": "1.0.0",
+            "execution_time": time.time(),
+            "valuation_type": "IFRS17",
+            "scenario": "Base",
+        }
+        
+        job = job_manager.create_job(
+            total_paths=1,
+            run_metadata=run_meta_dict,
+            original_request=request.model_dump()
+        )
+        
+        stmt = (
+            update(job_manager.jobs_table)
+            .where(job_manager.jobs_table.c.job_id == job.job_id)
+            .values(
+                status="COMPLETED",
+                progress=100.0,
+                completed_paths=1,
+                result=json.dumps(response.model_dump() if hasattr(response, 'model_dump') else response.dict()),
+                updated_at=time.time()
+            )
+        )
+        with job_manager.engine.begin() as conn:
+            conn.execute(stmt)
+
+        return response
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("IFRS 17 valuation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"IFRS 17 valuation error: {e}") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Advanced ESG Simulation Endpoint (Hull-White 1F & CIR)
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/esg/simulate", response_model=ESGSimulationResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def simulate_esg_paths(request: ESGSimulationRequest) -> ESGSimulationResponse:
+    """Generate multi-factor stochastic short-rate paths and compare with market discount curves."""
+    try:
+        # 1. Resolve / Construct Market Yield Curve
+        if request.custom_yield_points and len(request.custom_yield_points) > 0:
+            tenors = np.array([p["tenor"] for p in request.custom_yield_points], dtype=np.float64)
+            rates = np.array([p["rate"] for p in request.custom_yield_points], dtype=np.float64)
+            curve = MarketYieldCurve(tenors, rates, method="spline")
+        elif request.benchmark_curve == "SOVEREIGN_SUN":
+            curve = MarketYieldCurve.from_sovereign_sun()
+        elif request.benchmark_curve == "FLAT":
+            curve = MarketYieldCurve.from_flat_rate(request.r0 or 0.05)
+        else:
+            curve = MarketYieldCurve.from_us_treasury()
+
+        n_steps = round(request.n_years / request.dt)
+        time_grid = np.linspace(0.0, request.n_years, n_steps + 1).round(3).tolist()
+
+        feller_ok = None
+        feller_rat = None
+
+        # 2. Simulate according to model choice
+        if request.model_type == ESGModelType.HULL_WHITE_1F:
+            hw_model = HullWhite1FModel(
+                yield_curve=curve,
+                a=request.a or 0.10,
+                sigma=request.sigma or 0.015,
+            )
+            rate_paths = hw_model.simulate_paths(
+                n_years=request.n_years,
+                n_scenarios=request.n_scenarios,
+                dt=request.dt,
+                seed=request.seed,
+            )
+            df_paths = hw_model.discount_factor_paths(rate_paths, dt=request.dt)
+
+        elif request.model_type == ESGModelType.CIR:
+            cir_params = CIRParams(
+                r0=request.r0 or float(curve.spot_rate(0.0)),
+                kappa=request.kappa or 0.20,
+                theta=request.theta or 0.05,
+                sigma=request.sigma or 0.03,
+            )
+            feller_ok = cir_params.is_feller_satisfied
+            feller_rat = round(cir_params.feller_ratio, 2)
+
+            cir_model = CIRModel(
+                r0=cir_params.r0,
+                kappa=cir_params.kappa,
+                theta=cir_params.theta,
+                sigma=cir_params.sigma,
+            )
+            rate_paths = cir_model.simulate_paths(
+                n_years=request.n_years,
+                n_scenarios=request.n_scenarios,
+                dt=request.dt,
+                seed=request.seed,
+            )
+            df_paths = cir_model.discount_factor_paths(rate_paths, dt=request.dt)
+
+        else:  # VASICEK
+            v_params = VasicekParams(
+                r0=request.r0 or float(curve.spot_rate(0.0)),
+                kappa=request.a or 0.20,
+                theta=request.theta or 0.05,
+                sigma=request.sigma or 0.015,
+            )
+            v_esg = VasicekESG(v_params, seed=request.seed)
+            rate_paths = v_esg.simulate_paths(
+                n_scenarios=request.n_scenarios,
+                n_years=request.n_years,
+                dt=request.dt,
+                method="exact",
+            )
+            df_paths = v_esg.discount_factor_paths(rate_paths, dt=request.dt)
+
+        # 3. Calculate fan chart statistics
+        fan_chart_rates = []
+        for t_idx, t_val in enumerate(time_grid):
+            col = rate_paths[:, t_idx]
+            fan_chart_rates.append({
+                "year": t_val,
+                "p5": round(float(np.percentile(col, 5)), 5),
+                "p25": round(float(np.percentile(col, 25)), 5),
+                "p50": round(float(np.percentile(col, 50)), 5),
+                "p75": round(float(np.percentile(col, 75)), 5),
+                "p95": round(float(np.percentile(col, 95)), 5),
+                "mean": round(float(np.mean(col)), 5),
+            })
+
+        sample_paths = np.round(rate_paths[:10, :], 5).tolist()
+
+        # 4. Market vs Simulated Discount Factors
+        t_arr = np.array(time_grid, dtype=np.float64)
+        zero_prices = np.asarray(curve.zero_price(t_arr), dtype=np.float64)
+        market_dfs = np.round(zero_prices, 5).tolist()
+        sim_dfs = np.round(np.mean(df_paths, axis=0), 5).tolist()
+        mae = float(np.mean(np.abs(np.array(market_dfs) - np.array(sim_dfs))))
+
+        return ESGSimulationResponse(
+            model_type=request.model_type.value,
+            n_scenarios=request.n_scenarios,
+            n_years=request.n_years,
+            dt=request.dt,
+            time_grid=time_grid,
+            fan_chart_rates=fan_chart_rates,
+            sample_paths=sample_paths,
+            market_discount_factors=market_dfs,
+            simulated_discount_factors=sim_dfs,
+            pricing_error_mae=round(mae, 5),
+            feller_condition_satisfied=feller_ok,
+            feller_ratio=feller_rat,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("ESG simulation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"ESG simulation error: {e}") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Stress Testing & Tornado Sensitivity Endpoint
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/valuation/sensitivity/tornado", response_model=SensitivityResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_sensitivity_tornado(request: SensitivityRequest) -> SensitivityResponse:
+    """Run systematic multi-factor stress testing and Tornado sensitivity analysis."""
+    table_id = request.table_id or "soa_ilt"
+    try:
+        table = table_registry.get_table(table_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Mortality table '{table_id}' not found.") from None
+
+    try:
+        contract = PolicyContract(
+            product_type=request.product_type,
+            issue_age=request.issue_age,
+            term=request.term,
+            sum_assured=request.sum_assured,
+            premium_paying_term=request.premium_paying_term,
+        )
+        contract.validate_against_table(table)
+        interest = InterestAssumption(annual_rate=request.interest_rate)
+        expense = request.expense or ExpenseAssumption()
+        lapse = request.lapse or LapseAssumption()
+
+        engine = SensitivityEngine(
+            table=table,
+            interest=interest,
+            expense=expense,
+            lapse=lapse,
+        )
+
+        report = engine.run_tornado_analysis(
+            contract=contract,
+            gross_premium=request.gross_premium,
+        )
+
+        return SensitivityResponse(
+            table_id=table_id,
+            table_name=table.name,
+            product_type=request.product_type,
+            sum_assured=request.sum_assured,
+            baseline=report.baseline.model_dump(),
+            tornado_items=[item.model_dump() for item in report.tornado_items],
+            combined_scenarios=[sc.model_dump() for sc in report.combined_scenarios],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Sensitivity analysis failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Sensitivity analysis error: {e}") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Assumption Management Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/assumptions", response_model=list[AssumptionRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def list_assumptions(type: Optional[str] = None):
+    """List the latest version of all assumptions, optionally filtered by type."""
+    try:
+        return assumption_repo.list_latest_assumptions(assump_type=type)
+    except Exception as e:
+        logger.exception("Failed to list assumptions")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/assumptions", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def create_assumption(payload: AssumptionCreate):
+    """Create a completely new assumption (Version 1)."""
+    try:
+        data = payload.model_dump()
+        created = assumption_repo.create_assumption(data)
+        user = getattr(create_assumption, "current_user", {"id": "system"})  # Fallback if dependency injection is mocked
+        audit_repo.log_event(user.get("id", "system"), "ASSUMPTION", created["id"], "ASSUMPTION_CREATED", new_value=created)
+        return created
+    except Exception as e:
+        logger.exception("Failed to create assumption")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/assumptions/{id}", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_assumption_latest(id: str):
+    """Get the latest version of an assumption."""
+    record = assumption_repo.get_latest_version(id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Assumption not found")
+    return record
+
+@app.get("/api/v1/assumptions/{id}/history", response_model=list[AssumptionRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_assumption_history(id: str):
+    """Get all versions of an assumption."""
+    records = assumption_repo.get_history(id)
+    if not records:
+        raise HTTPException(status_code=404, detail="Assumption not found")
+    return records
+
+@app.post("/api/v1/assumptions/{id}/version", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def create_assumption_version(id: str, payload: AssumptionVersionCreate):
+    """Create a new version of an existing assumption."""
+    try:
+        record = assumption_repo.get_latest_version(id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Assumption not found")
+            
+        data = payload.model_dump(exclude_unset=True)
+        # Inherit fields if not provided
+        if "name" not in data or not data["name"]:
+            data["name"] = record["name"]
+        if "type" not in data or not data["type"]:
+            data["type"] = record["type"]
+            
+        created = assumption_repo.create_new_version(id, data)
+        user = getattr(create_assumption_version, "current_user", {"id": "system"})
+        audit_repo.log_event(user.get("id", "system"), "ASSUMPTION", created["id"], "ASSUMPTION_VERSION_CREATED", new_value=created)
+        return created
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to create assumption version")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/assumptions/{id}/status", response_model=AssumptionRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def update_assumption_status(id: str, payload: AssumptionStatusUpdate):
+    """Update status (e.g. DEACTIVATE) for an assumption."""
+    try:
+        record = assumption_repo.update_status(id, payload.status)
+        if not record:
+            raise HTTPException(status_code=404, detail="Assumption not found")
+        return record
+    except Exception as e:
+        logger.exception("Failed to update assumption status")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ────────────────────────────────────────────────────────────
+# Base Model Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/models", response_model=list[BaseModelRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def list_base_models():
+    """List all available base actuarial models."""
+    return scenario_repo.list_base_models()
+
+
+@app.get("/api/v1/models/{id}", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_base_model(id: str):
+    """Retrieve a specific base model by ID."""
+    model = scenario_repo.get_base_model(id)
+    if not model:
+        raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+    return model
+
+
+@app.post("/api/v1/models", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def create_base_model(payload: BaseModelCreate, user: dict = Depends(get_current_user)):
+    """Create a new reusable base model."""
+    try:
+        data = payload.model_dump()
+        created = scenario_repo.create_base_model(data)
+        audit_repo.log_event(user.get("id", "system"), "MODEL", created["id"], "MODEL_CREATED", new_value=created)
+        return created
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/models/{id}", response_model=BaseModelRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def update_base_model(id: str, payload: BaseModelUpdate, user: dict = Depends(get_current_user)):
+    """Update an existing base model. Rejected if status is Approved or Locked."""
+    try:
+        data = payload.model_dump(exclude_unset=True)
+        old_model = scenario_repo.get_base_model(id)
+        if not old_model:
+            raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+            
+        updated = scenario_repo.update_base_model(id, data)
+        audit_repo.log_event(user.get("id", "system"), "MODEL", id, "MODEL_UPDATED", previous_value=old_model, new_value=updated)
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update base model")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/models/{id}/status", response_model=BaseModelRead)
+def update_base_model_status(id: str, payload: ModelStatusUpdate, user: dict = Depends(get_current_user)):
+    """Update lifecycle status. Only Reviewers/Admins can Approve/Reject/Lock."""
+    status = payload.status
+    role = user.get("role", "Viewer")
+    
+    # Enforce role logic
+    if status in ["Approved", "Rejected", "Locked"]:
+        if role not in ["Reviewer", "Admin"]:
+            raise HTTPException(status_code=403, detail=f"{role} cannot transition model to {status}.")
+    else:
+        if role not in ["Actuary", "Admin", "Reviewer"]:
+            raise HTTPException(status_code=403, detail=f"{role} cannot transition model status.")
+            
+    try:
+        old_model = scenario_repo.get_base_model(id)
+        if not old_model:
+            raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+            
+        updated = scenario_repo.update_base_model_status(id, status)
+        action_map = {
+            "Submitted": "MODEL_SUBMITTED",
+            "Approved": "MODEL_APPROVED",
+            "Rejected": "MODEL_REJECTED",
+            "Locked": "MODEL_LOCKED",
+        }
+        action = action_map.get(status, "MODEL_STATUS_CHANGED")
+        audit_repo.log_event(user.get("id", "system"), "MODEL", id, action, previous_value=old_model, new_value=updated)
+        return updated
+    except Exception as e:
+        logger.exception("Failed to update base model status")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/models/{id}/audit", response_model=list[AuditLogRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_base_model_audit_logs(id: str):
+    """Retrieve audit history for a base model."""
+    if not scenario_repo.get_base_model(id):
+        raise HTTPException(status_code=404, detail=f"Base model '{id}' not found.")
+    return audit_repo.get_logs_for_entity("MODEL", id)
+
+
+
+# ────────────────────────────────────────────────────────────
+# Scenario Management Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/scenarios", response_model=list[ScenarioRead], dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def list_scenarios(base_model_id: Optional[str] = None, status: Optional[str] = None):
+    """List actuarial scenarios, optionally filtered by base model and status."""
+    return scenario_repo.list_scenarios(base_model_id=base_model_id, status=status)
+
+
+@app.post("/api/v1/scenarios", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def create_scenario(payload: ScenarioCreate):
+    """Create a new scenario referencing a base model with assumption overrides."""
+    try:
+        data = payload.model_dump()
+        if not scenario_repo.get_base_model(data["base_model_id"]):
+            raise HTTPException(status_code=404, detail=f"Base model '{data['base_model_id']}' not found.")
+        return scenario_repo.create_scenario(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create scenario")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/scenarios/{id}", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_scenario(id: str):
+    """Get scenario details by ID."""
+    scenario = scenario_repo.get_scenario(id)
+    if not scenario:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return scenario
+
+
+@app.put("/api/v1/scenarios/{id}", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def update_scenario(id: str, payload: ScenarioUpdate):
+    """Update an existing scenario's name, description, overrides, or status."""
+    data = payload.model_dump(exclude_unset=True)
+    if "base_model_id" in data and data["base_model_id"]:
+        if not scenario_repo.get_base_model(data["base_model_id"]):
+            raise HTTPException(status_code=404, detail=f"Base model '{data['base_model_id']}' not found.")
+    updated = scenario_repo.update_scenario(id, data)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return updated
+
+
+@app.post("/api/v1/scenarios/{id}/duplicate", response_model=ScenarioRead, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def duplicate_scenario(id: str, name: Optional[str] = None):
+    """Duplicate an existing scenario with a new ID and title."""
+    dup = scenario_repo.duplicate_scenario(id, new_name=name)
+    if not dup:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return dup
+
+
+@app.post("/api/v1/scenarios/{id}/validate", response_model=ScenarioValidationResult, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def validate_scenario(id: str):
+    """Validate scenario overrides against actuarial domain rules and referenced base model."""
+    result = scenario_service.validate_scenario(id)
+    if not result.is_valid and result.errors and result.errors[0].endswith("not found."):
+        raise HTTPException(status_code=404, detail=result.errors[0])
+    return result
+
+
+@app.post("/api/v1/scenarios/{id}/run", response_model=ScenarioExecutionResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def run_scenario(id: str, user: dict = Depends(get_current_user)):
+    """Execute deterministic valuation for scenario, compute baseline delta, and persist in job history."""
+    audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_STARTED")
+    try:
+        res = scenario_service.execute_scenario(id)
+        audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_COMPLETED", run_id=res.job_id)
+        return res
+    except ValueError as e:
+        audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_FAILED", new_value={"error": str(e)})
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        audit_repo.log_event(user.get("id", "system"), "VALUATION", id, "VALUATION_FAILED", new_value={"error": str(e)})
+        logger.exception("Failed to execute scenario '%s'", id)
+        raise HTTPException(status_code=500, detail=f"Scenario execution failed: {e}")
+
+
+@app.delete("/api/v1/scenarios/{id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def delete_scenario(id: str):
+    """Delete a scenario."""
+    deleted = scenario_repo.delete_scenario(id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Scenario '{id}' not found.")
+    return {"status": "deleted", "id": id}
+
+
+# ────────────────────────────────────────────────────────────
+# First-Class Sensitivity Analysis Endpoints (Task 10)
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/sensitivity/defaults", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_sensitivity_defaults():
+    """Return default sensitivity analysis shock grid specifications."""
+    return sensitivity_service.get_default_shocks()
+
+
+@app.post("/api/v1/sensitivity/analyze", response_model=SensitivityAnalysisResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def analyze_sensitivity(request: SensitivityAnalysisRequest):
+    """Run first-class sensitivity analysis across mortality, discount rate, lapse, and expense.
+
+    Reuses Scenario Management without duplicate engines. Computes BEL, CSM, and profit/loss.
+    Ranks assumptions into Top Valuation Drivers. Persists run in job history.
+    """
+    try:
+        return sensitivity_service.run_sensitivity_analysis(request)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+    except Exception as e:
+        logger.exception("Sensitivity analysis failed")
+        raise HTTPException(status_code=500, detail=f"Sensitivity analysis failed: {e}")
+
+
+@app.get("/api/v1/sensitivity/{id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_sensitivity_result(id: str):
+    """Retrieve persisted sensitivity analysis results from job history."""
+    from sqlalchemy import select
+    with job_manager.engine.begin() as conn:
+        stmt = select(job_manager.jobs_table).where(
+            (job_manager.jobs_table.c.job_id == id)
+        )
+        row = conn.execute(stmt).fetchone()
+        if not row:
+            stmt_all = select(job_manager.jobs_table).where(
+                job_manager.jobs_table.c.run_metadata.like(f"%{id}%")
+            )
+            row = conn.execute(stmt_all).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Sensitivity analysis '{id}' not found.")
+
+        result_raw = row._mapping["result"]
+        if result_raw:
+            if isinstance(result_raw, str):
+                return json.loads(result_raw)
+            return result_raw
+        return {
+            "job_id": row._mapping["job_id"],
+            "status": row._mapping["status"],
+            "run_metadata": json.loads(row._mapping["run_metadata"]) if isinstance(row._mapping["run_metadata"], str) else row._mapping["run_metadata"],
+        }
+
+
+# ────────────────────────────────────────────────────────────
+# Run Comparison Endpoints (Task 11)
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/runs/comparable", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def list_comparable_runs(limit: int = 50):
+    """Retrieve completed valuation runs available for side-by-side comparison."""
+    return run_comparison_service.get_comparable_runs(limit=limit)
+
+
+@app.post("/api/v1/runs/compare", response_model=RunComparisonResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def compare_valuation_runs(request: RunComparisonRequest):
+    """Compare Run A and Run B, calculate absolute and percentage deltas, and explain differences."""
+    try:
+        return run_comparison_service.compare_runs(request.run_a_id, request.run_b_id)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception as e:
+        logger.exception("Run comparison failed")
+        raise HTTPException(status_code=500, detail=f"Run comparison failed: {e}")
+
+
+@app.post("/api/v1/valuation/stress-test", response_model=StressTestResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_stress_test_sliders(request: StressTestRequest) -> StressTestResponse:
+    """Run real-time interactive stress testing with custom slider shocks."""
+    base_assump = request.base_assumptions or {}
+    table_id = base_assump.get("table_id") or request.table_id or "soa_ilt"
+    try:
+        table = table_registry.get_table(table_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Mortality table '{table_id}' not found.") from None
+
+    try:
+        prod_type = base_assump.get("product_type") or request.product_type
+        issue_age = int(base_assump.get("issue_age") or request.issue_age)
+        term = base_assump.get("term") if "term" in base_assump else request.term
+        sum_assured = float(base_assump.get("sum_assured") or request.sum_assured)
+        prem_term = base_assump.get("premium_paying_term") or request.premium_paying_term
+        interest_rate = float(base_assump.get("interest_rate") or request.interest_rate)
+        gross_prem = base_assump.get("gross_premium") if "gross_premium" in base_assump else request.gross_premium
+
+        contract = PolicyContract(
+            product_type=prod_type,
+            issue_age=issue_age,
+            term=term,
+            sum_assured=sum_assured,
+            premium_paying_term=prem_term,
+        )
+        contract.validate_against_table(table)
+        interest = InterestAssumption(annual_rate=interest_rate)
+        expense = request.expense or ExpenseAssumption()
+        lapse = request.lapse or LapseAssumption()
+
+        engine = SensitivityEngine(
+            table=table,
+            interest=interest,
+            expense=expense,
+            lapse=lapse,
+        )
+
+        shocks_dict = request.shocks.model_dump() if hasattr(request.shocks, "model_dump") else dict(request.shocks)
+        res = engine.run_realtime_stress_test(
+            contract=contract,
+            shocks=shocks_dict,
+            gross_premium=gross_prem,
+        )
+
+        return StressTestResponse(
+            table_id=table_id,
+            table_name=table.name,
+            product_type=str(prod_type),
+            sum_assured=sum_assured,
+            baseline_reserve=res["baseline_reserve"],
+            stressed_reserve=res["stressed_reserve"],
+            delta_reserve=res["delta_reserve"],
+            delta_pct=res["delta_pct"],
+            effective_duration=res["effective_duration"],
+            dv01=res["dv01"],
+            effective_convexity=res["effective_convexity"],
+            shocks_applied=res["shocks_applied"],
+            tornado_data=res["tornado_data"],
+            reserve_trajectory=res["reserve_trajectory"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Real-time stress test valuation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Stress test valuation error: {e}") from e
+
+
+@app.post("/api/v1/contracts/validate-graph", response_model=ValidationResult, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def validate_contract_graph(payload: ContractGraphPayload) -> ValidationResult:
+    """Run full actuarial validation suite against the visual blueprint."""
+    validator = BlueprintValidator(table_lookup=table_registry)
+    return validator.validate(payload)
+
+
+@app.post("/api/v1/contracts/simulate-graph", response_model=SimulateGraphResponse, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def simulate_contract_graph(payload: ContractGraphPayload) -> SimulateGraphResponse:
+    """Evaluate a visual node-based contract logic blueprint into deterministic actuarial projections."""
+    try:
+        # Pre-execution validation guard
+        validator = BlueprintValidator(table_lookup=table_registry)
+        validation_result = validator.validate(payload)
+        
+        if not validation_result.is_valid:
+            # Reconstruct the issues into a readable string or return the JSON payload
+            error_details = [i.model_dump() for i in validation_result.issues if i.severity == ValidationSeverity.ERROR]
+            raise HTTPException(status_code=400, detail={"message": "Blueprint validation failed.", "errors": error_details})
+
+        simulator = ContractGraphSimulator(table_lookup=table_registry)
+        return simulator.simulate(payload)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Contract graph simulation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Graph simulation error: {e}") from e
+
+
+@app.post("/api/v1/contracts/guided/term-life", response_model=ContractGraphPayload, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def generate_guided_term_life(request: GuidedTermLifeRequest) -> ContractGraphPayload:
+    """Generate a valid Term Life Insurance blueprint graph from guided parameters."""
+    # Build nodes
+    nodes = [
+        GraphNodeData(
+            id="node-policy-input",
+            type="policyInput",
+            data={
+                "product_name": f"{request.term}-Year Term Life",
+                "age": request.issue_age,
+                "term": request.term,
+                "sum_assured": request.sum_assured,
+                "premium_freq": request.premium_freq,
+                "interest_rate": request.interest_rate,
+                "table_id": request.table_id,
+            }
+        ),
+        GraphNodeData(
+            id="node-inflow-premium",
+            type="inflow",
+            data={
+                "inflow_type": "Gross Premium",
+                "mode": "formula",
+                "amount": 0,
+                "frequency": request.premium_freq,
+            }
+        ),
+        GraphNodeData(
+            id="node-contingency-mortality",
+            type="contingency",
+            data={
+                "decrement_type": "Mortality",
+                "table_id": request.table_id,
+                "multiplier": 1.0,
+                "lapse_rate": request.lapse_rate or 0.0,
+            }
+        ),
+        GraphNodeData(
+            id="node-outflow-death",
+            type="outflow",
+            data={
+                "benefit_type": "Death Benefit",
+                "formula": "1.0 * SA",
+                "factor": 1.0,
+            }
+        ),
+        GraphNodeData(
+            id="node-valuation-sink",
+            type="valuationSink",
+            data={
+                "label": "Valuation Consolidator",
+            }
+        )
+    ]
+
+    edges = [
+        GraphEdgeData(source="node-policy-input", target="node-inflow-premium", sourceHandle="policy_meta", targetHandle="inflow_in"),
+        GraphEdgeData(source="node-policy-input", target="node-contingency-mortality", sourceHandle="policy_meta", targetHandle="contingency_in"),
+        GraphEdgeData(source="node-contingency-mortality", target="node-outflow-death", sourceHandle="on_death", targetHandle="outflow_in"),
+        GraphEdgeData(source="node-inflow-premium", target="node-valuation-sink", sourceHandle="cash_inflow", targetHandle="sink_inflow"),
+        GraphEdgeData(source="node-outflow-death", target="node-valuation-sink", sourceHandle="cash_outflow", targetHandle="sink_outflow"),
+    ]
+
+    if request.expense_first_year_pct is not None and request.expense_renewal_pct is not None:
+        nodes.append(
+            GraphNodeData(
+                id="node-outflow-expense",
+                type="outflow",
+                data={
+                    "benefit_type": "Expense Loadings",
+                    "formula": f"{int(request.expense_first_year_pct*100)}% Y1 / {int(request.expense_renewal_pct*100)}% Ren",
+                    "first_year_pct": request.expense_first_year_pct,
+                    "renewal_pct": request.expense_renewal_pct,
+                }
+            )
+        )
+        edges.append(GraphEdgeData(source="node-inflow-premium", target="node-outflow-expense", sourceHandle="cash_inflow", targetHandle="outflow_in"))
+        edges.append(GraphEdgeData(source="node-outflow-expense", target="node-valuation-sink", sourceHandle="cash_outflow", targetHandle="sink_outflow"))
+
+    payload = ContractGraphPayload(
+        contract_id="guided_term_life",
+        nodes=nodes,
+        edges=edges,
+        discount_rate=request.interest_rate
+    )
+    
+    # Validate
+    validator = BlueprintValidator(table_lookup=table_registry)
+    val_result = validator.validate(payload)
+    if not val_result.is_valid:
+        error_msgs = [i.message for i in val_result.issues if i.severity == ValidationSeverity.ERROR]
+        raise HTTPException(status_code=400, detail=f"Generated blueprint is invalid: {error_msgs}")
+
+    return payload
+
+# ────────────────────────────────────────────────────────────
+# Jobs API Endpoints
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/jobs", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def list_jobs_endpoint(limit: int = 100):
+    """List recent valuation jobs."""
+    try:
+        jobs = job_manager.list_jobs(limit=limit)
+        return jobs
+    except Exception as e:
+        logger.exception("Failed to list jobs: %s", e)
+        raise HTTPException(status_code=500, detail="Could not list jobs") from e
+
+@app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def get_job_endpoint(job_id: str):
+    """Get detailed information for a specific valuation job."""
+    try:
+        job = job_manager.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get job %s: %s", job_id, e)
+        raise HTTPException(status_code=500, detail="Could not retrieve job") from e
+
+
+# ────────────────────────────────────────────────────────────
+# Valuation Export API Endpoints (Task 13)
+# ────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/export/{job_id}", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def export_valuation_results(
+    job_id: str,
+    format: str = Query("xlsx", pattern="^(xlsx|csv|json|csv-zip)$"),
+    sheet: Optional[str] = Query(None, description="Optional sheet name when exporting CSV"),
+    as_zip: bool = Query(False, description="Whether to export CSVs bundled in a ZIP archive"),
+):
+    """
+    Export valuation results into Excel (.xlsx), CSV, or JSON format.
+    Strictly consumes persisted results without recalculating actuarial values.
+    """
+    try:
+        ts = int(time.time())
+        short_id = job_id[:8]
+        if format == "xlsx":
+            buf = export_service.export_excel(job_id)
+            return Response(
+                content=buf.getvalue(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "Content-Disposition": f'attachment; filename="valuation_{short_id}_{ts}.xlsx"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        elif format in ("csv-zip",) or (format == "csv" and as_zip):
+            zip_buf = export_service.export_csv(job_id, as_zip=True)
+            return Response(
+                content=zip_buf.getvalue(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="valuation_{short_id}_csvs_{ts}.zip"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        elif format == "csv":
+            csv_content = export_service.export_csv(job_id, sheet_name=sheet)
+            sheet_suffix = f"_{sheet.lower()}" if sheet else ""
+            return Response(
+                content=csv_content,
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="valuation_{short_id}{sheet_suffix}_{ts}.csv"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        elif format == "json":
+            return export_service.export_json(job_id)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported format '{format}'")
+    except JobNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except JobNotExportableError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Failed to export job %s: %s", job_id, e)
+        raise HTTPException(status_code=500, detail=f"Export error: {e}") from e
+
+
+@app.get("/api/v1/export/{job_id}/excel", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def export_excel_shortcut(job_id: str):
+    """Shortcut endpoint to export valuation results as an Excel workbook (.xlsx)."""
+    return export_valuation_results(job_id, format="xlsx")
+
+
+@app.get("/api/v1/export/{job_id}/csv", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def export_csv_shortcut(
+    job_id: str,
+    sheet: Optional[str] = Query(None),
+    as_zip: bool = Query(False),
+):
+    """Shortcut endpoint to export valuation results as CSV or ZIP bundle of CSVs."""
+    return export_valuation_results(job_id, format="csv", sheet=sheet, as_zip=as_zip)
+
+
+@app.get("/api/v1/export/{job_id}/json", dependencies=[Depends(RoleChecker(["Admin", "Actuary", "Reviewer", "Viewer"]))])
+def export_json_shortcut(job_id: str):
+    """Shortcut endpoint to export valuation results as structured JSON."""
+    return export_valuation_results(job_id, format="json")
+
+
+# ────────────────────────────────────────────────────────────
+# Model Health API Endpoints (Task 14)
+# ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/health/model", response_model=ModelHealthReport, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_model_health_endpoint(request: ModelHealthRequest) -> ModelHealthReport:
+    """
+    Evaluate Model Health across 7 standardized categories:
+    Structure, Data, Assumptions, Validation, Coverage, Reproducibility, Configuration completeness.
+    Provides explainable readiness score, defect analysis, and deep link metadata.
+    """
+    try:
+        if request.blueprint is not None:
+            return model_health_service.evaluate_blueprint(request.blueprint)
+        elif request.configuration is not None:
+            return model_health_service.evaluate_model_config(request.configuration)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'blueprint' (ContractGraphPayload) or 'configuration' (dict) to evaluate."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Model health evaluation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Health evaluation error: {e}") from e
+
+
+@app.post("/api/v1/contracts/health", response_model=ModelHealthReport, dependencies=[Depends(RoleChecker(["Admin", "Actuary"]))])
+def evaluate_contract_blueprint_health_endpoint(payload: ContractGraphPayload) -> ModelHealthReport:
+    """
+    Evaluate Model Health directly for a visual contract logic blueprint DAG.
+    """
+    try:
+        return model_health_service.evaluate_blueprint(payload)
+    except Exception as e:
+        logger.exception("Blueprint health evaluation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Blueprint health evaluation error: {e}") from e
+
+
+
+from actuary_engine.api.routes.blueprint import router as blueprint_router
+app.include_router(blueprint_router, prefix="/api/v1/blueprint")
+
+from actuary_engine.core.exceptions import ActuraException
+from actuary_engine.api.middleware.error_handler import actura_exception_handler, generic_exception_handler
+app.add_exception_handler(ActuraException, actura_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
+
+from actuary_engine.api.routes.projects import router as projects_router
+from actuary_engine.api.routes.blueprints import router as blueprints_router
+from actuary_engine.api.routes.valuations import router as valuations_router
+app.include_router(projects_router, prefix='/api/v1')
+app.include_router(blueprints_router, prefix='/api/v1')
+app.include_router(valuations_router, prefix='/api/v1')
+from actuary_engine.api.routes.workflow import router as workflow_router
+app.include_router(workflow_router, prefix='/api/v1')

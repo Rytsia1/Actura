@@ -13,16 +13,16 @@ import numpy as np
 
 from actuary_engine.api.job_manager import job_manager
 from actuary_engine.infrastructure.scenario_repo import scenario_repo
-from actuary_engine.tables.mortality_table import MortalityTable
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.registry import table_registry
 from actuary_engine.models.assumptions import (
     InterestAssumption,
     ExpenseAssumption,
     LapseAssumption,
 )
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 from actuary_engine.valuation.ifrs17 import IFRS17Engine
 from actuary_engine.api.schemas import (

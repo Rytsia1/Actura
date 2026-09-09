@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from actuary_engine.models.assumptions import InterestAssumption
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 class TestCommutationIdentities:

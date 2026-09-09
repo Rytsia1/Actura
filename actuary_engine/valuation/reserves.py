@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.commutation import CommutationFunctions
 
 
 class ReserveCalculator:

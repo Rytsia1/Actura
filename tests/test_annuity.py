@@ -4,7 +4,7 @@ Tests for AnnuityPricer: annuity-due and annuity-immediate present values.
 
 import pytest
 
-from actuary_engine.pricing.annuity import AnnuityPricer
+from actuary_engine.domain.pricing.annuity import AnnuityPricer
 
 
 class TestAnnuityDue:

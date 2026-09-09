@@ -7,12 +7,12 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from actuary_engine.stochastic.lee_carter import (
+from actuary_engine.domain.stochastic.lee_carter import (
     LeeCarterFitResult,
     LeeCarterForecastSummary,
     LeeCarterModel,
 )
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 @pytest.fixture(scope="session")
@@ -180,7 +180,7 @@ class TestLeeCarterAPI:
 
     def test_lee_carter_forecast_endpoint(self) -> None:
         from fastapi.testclient import TestClient
-        from actuary_engine.api.main import app
+        from actuary_engine.main import app
 
         client = TestClient(app)
         payload = {
@@ -213,7 +213,7 @@ class TestLeeCarterAPI:
 
     def test_lee_carter_nonexistent_table_returns_404(self) -> None:
         from fastapi.testclient import TestClient
-        from actuary_engine.api.main import app
+        from actuary_engine.main import app
 
         client = TestClient(app)
         payload = {

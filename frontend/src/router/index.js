@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
+import ProjectDashboardView from '../views/ProjectDashboardView.vue'
+import ContractBuilderView from '../views/ContractBuilderView.vue'
 import MainDashboard from '../views/MainDashboard.vue'
 import TermsOfService from '../views/TermsOfService.vue'
 import PrivacyPolicy from '../views/PrivacyPolicy.vue'
@@ -17,6 +19,11 @@ const routes = [
   {
     path: '/',
     name: 'Dashboard',
+    component: ProjectDashboardView,
+  },
+  {
+    path: '/sandbox',
+    name: 'Sandbox',
     component: MainDashboard,
     meta: { requiresAuth: true }
   },
@@ -49,6 +56,16 @@ const routes = [
     path: '/compare',
     name: 'Compare',
     component: () => import('../views/RunComparisonView.vue'),
+  },
+  {
+    path: '/projects/:id',
+    name: 'ContractBuilder',
+    component: ContractBuilderView,
+  },
+  {
+    path: '/wizard/:projectId?',
+    name: 'ValuationWizard',
+    component: () => import('../views/ValuationWizardView.vue'),
   },
   {
     path: '/terms',

@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption, LapseAssumption
 from actuary_engine.models.contracts import ProductType
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 class PortfolioSummary(BaseModel):

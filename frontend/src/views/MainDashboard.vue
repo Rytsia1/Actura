@@ -1,5 +1,5 @@
 <script setup>
-import { ref, shallowRef, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, shallowRef, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import {
   checkHealth,
   fetchTables,
@@ -31,6 +31,8 @@ import CommandPalette from '../components/CommandPalette.vue'
 import { useRouter } from 'vue-router'
 import { createRequestState } from '../utils/useAsyncState'
 import { exportValuationCSV } from '../utils/export.js'
+import { useProjectStore } from '../stores/useProjectStore'
+import { projectApi } from '../services/projectApi'
 
 // ────────────────────────────────────────────────────────────
 // Reactive Dashboard State & Request State Machines
@@ -121,10 +123,37 @@ const form = reactive({
   seed: 42,
 })
 
+const projectStore = useProjectStore()
+const isAutoSaving = ref(false)
+let saveTimeout = null
+
+// Load state from project if available
+if (projectStore.currentProject && projectStore.currentProject.sandbox_state) {
+  Object.assign(form, projectStore.currentProject.sandbox_state)
+}
+
+// Auto-save logic
+watch(form, (newForm) => {
+  if (!projectStore.currentProject) return
+  isAutoSaving.value = true
+  if (saveTimeout) clearTimeout(saveTimeout)
+  
+  saveTimeout = setTimeout(async () => {
+    try {
+      await projectApi.update(projectStore.currentProject.id, { sandbox_state: newForm })
+      // Update local store to reflect the saved state so if we navigate away and back, it's there
+      projectStore.currentProject.sandbox_state = JSON.parse(JSON.stringify(newForm))
+    } catch (err) {
+      console.error("Failed to auto-save sandbox state", err)
+    } finally {
+      isAutoSaving.value = false
+    }
+  }, 1500)
+}, { deep: true })
+
 // Navigation definition
 const navItems = [
   { id: 'overview', label: 'Overview', icon: 'chart' },
-  { id: 'builder', label: 'Logic Builder', icon: 'blueprint' },
   { id: 'stochastic', label: 'ESG & Risk', icon: 'risk' },
   { id: 'sensitivity', label: 'Sensitivity Analysis', icon: 'tornado' },
   { id: 'ifrs17', label: 'IFRS 17', icon: 'balance' },
@@ -594,6 +623,9 @@ onUnmounted(() => {
     activeSocketConnection.close()
     activeSocketConnection = null
   }
+  if (saveTimeout) {
+    clearTimeout(saveTimeout)
+  }
 })
 </script>
 
@@ -605,13 +637,21 @@ onUnmounted(() => {
     <!-- ═══════════════════════════════════════════════════════ -->
     <aside :class="['sidebar', sidebarOpen ? 'open' : '']">
       <!-- Brand -->
-      <div class="px-5 py-5 flex items-center space-x-3 border-b border-white/[0.06]">
-        <div class="h-12 w-12 rounded-xl flex-shrink-0 shadow-md border border-white/[0.05] relative overflow-hidden bg-[#070b14]">
-          <img src="/logo.jpg" alt="Actura Mascot" class="absolute w-[220%] h-[220%] max-w-none -bottom-[15%] -right-[20%]" />
+      <div class="px-5 py-5 flex flex-col gap-3 border-b border-white/[0.06] min-w-0">
+        <div class="flex items-center space-x-3">
+          <div class="h-12 w-12 rounded-xl flex-shrink-0 shadow-md border border-white/[0.05] relative overflow-hidden bg-[#070b14]">
+            <img src="/logo.jpg" alt="Actura Mascot" class="absolute w-[220%] h-[220%] max-w-none -bottom-[15%] -right-[20%]" />
+          </div>
+          <div class="min-w-0 flex-1 truncate">
+            <div class="text-sm font-semibold text-white tracking-tight truncate">Actura</div>
+            <div class="text-xs text-slate-500 font-medium truncate">Actuarial Valuation & Risk Platform</div>
+          </div>
         </div>
-        <div>
-          <div class="text-sm font-semibold text-white tracking-tight">Actura</div>
-          <div class="text-[10px] text-slate-500 font-medium">Actuarial Valuation & Risk Platform</div>
+        <!-- Optional Project Indicator / Auto-Save Indicator -->
+        <div v-if="projectStore.currentProject" class="text-xs font-medium px-2 py-1 rounded bg-white/[0.05] text-slate-400 flex items-center gap-1.5 truncate" :title="projectStore.currentProject.name">
+          <svg v-if="isAutoSaving" class="animate-spin flex-shrink-0" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-emerald-400 flex-shrink-0" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span class="truncate">{{ isAutoSaving ? 'Saving...' : 'Saved' }}</span>
         </div>
       </div>
 
@@ -621,40 +661,40 @@ onUnmounted(() => {
           v-for="item in navItems"
           :key="item.id"
           @click="switchTab(item.id)"
-          :class="['sidebar-nav-item w-full text-left', activeTab === item.id ? 'active' : '']"
+          :class="['sidebar-nav-item w-full text-left focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:outline-none', activeTab === item.id ? 'active' : '']"
         >
           <!-- Icons -->
-          <svg v-if="item.icon === 'blueprint'" class="h-4 w-4 flex-shrink-0 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-if="item.icon === 'blueprint'" aria-hidden="true" class="h-4 w-4 flex-shrink-0 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
           </svg>
-          <svg v-else-if="item.icon === 'chart'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'chart'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
           </svg>
-          <svg v-else-if="item.icon === 'risk'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'risk'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5" />
           </svg>
-          <svg v-else-if="item.icon === 'tornado'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'tornado'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
           </svg>
-          <svg v-else-if="item.icon === 'balance'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'balance'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12 20.25c1.472 0 2.882.265 4.185.75M18.75 4.97A48.416 48.416 0 0012 4.5c-2.291 0-4.545.16-6.75.47m13.5 0c1.01.143 2.01.317 3 .52m-3-.52l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.988 5.988 0 01-2.031.352 5.988 5.988 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L18.75 4.971zm-16.5.52c.99-.203 1.99-.377 3-.52m0 0l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.989 5.989 0 01-2.031.352 5.989 5.989 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L5.25 4.971z" />
           </svg>
-          <svg v-else-if="item.icon === 'portfolio'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'portfolio'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
           </svg>
-          <svg v-else-if="item.icon === 'reserve'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'reserve'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
           </svg>
-          <svg v-else-if="item.icon === 'cashflow'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'cashflow'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
           </svg>
-          <svg v-else-if="item.icon === 'history'" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'history'" aria-hidden="true" class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
           </svg>
-          <svg v-else-if="item.icon === 'layers'" class="h-4 w-4 flex-shrink-0 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else-if="item.icon === 'layers'" aria-hidden="true" class="h-4 w-4 flex-shrink-0 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 4.5L2.25 16.5l9.75 5.25 9.75-5.25-4.179-2.25m0 0l-5.571 3-5.571-3" />
           </svg>
-          <svg v-else class="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <svg v-else class="h-4 w-4 flex-shrink-0" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M10.875 12c-.621 0-1.125.504-1.125 1.125M12 12c.621 0 1.125.504 1.125 1.125m0 0v1.5c0 .621-.504 1.125-1.125 1.125m0-3.75c-.621 0-1.125.504-1.125 1.125" />
           </svg>
           <span>{{ item.label }}</span>
@@ -672,15 +712,23 @@ onUnmounted(() => {
       <!-- ─── Top Header Bar ─── -->
       <header class="header-bar sticky top-0 z-30 px-6 h-14 flex items-center justify-between">
         <!-- Mobile hamburger -->
-        <button @click="sidebarOpen = !sidebarOpen" class="lg:hidden mr-3 text-slate-400 hover:text-white">
-          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <button @click="sidebarOpen = !sidebarOpen" aria-label="Open menu" class="lg:hidden mr-3 text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-sky-500 rounded outline-none">
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
           </svg>
         </button>
 
-        <!-- Search Bar -->
-        <div class="hidden sm:flex items-center flex-1 max-w-md">
-          <CommandPalette @action="handleCommandPaletteAction" />
+        <!-- Search Bar and Back Button -->
+        <div class="hidden sm:flex items-center flex-1 max-w-md gap-4">
+          <!-- Back Button -->
+          <router-link to="/" class="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors group focus-visible:ring-2 focus-visible:ring-sky-500 rounded outline-none px-2 py-1 -ml-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-left group-hover:-translate-x-1 transition-transform" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+            Dashboard
+          </router-link>
+          
+          <div class="w-px h-4 bg-white/[0.1]"></div>
+
+          <CommandPalette @action="handleCommandPaletteAction" class="flex-1" />
         </div>
 
         <!-- Right Actions -->
@@ -713,7 +761,7 @@ onUnmounted(() => {
       <div v-if="errorMessage || backendStatus === 'error'" class="mx-6 mt-4">
         <div class="card p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-rose-500/20">
           <div class="flex items-center space-x-2.5 text-sm">
-            <span class="h-2 w-2 rounded-full bg-rose-500 animate-pulse"></span>
+            <span class="h-2 w-2 rounded-full bg-rose-500 animate-pulse" aria-hidden="true"></span>
             <div>
               <span class="font-medium text-rose-400">Connection Error: </span>
               <span class="text-slate-400 text-xs">{{ errorMessage || 'FastAPI server unreachable at http://127.0.0.1:8000' }}</span>
@@ -721,7 +769,7 @@ onUnmounted(() => {
           </div>
           <div class="flex items-center space-x-2">
             <code class="text-[10px] text-slate-500 bg-black/30 px-2 py-1 rounded font-mono">uvicorn actuary_engine.api.main:app --port 8000</code>
-            <button @click="executeValuation" class="btn-primary text-[11px] px-3 py-1">Retry</button>
+            <button @click="checkBackendConnection" class="btn-primary text-[11px] px-3 py-1 focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:outline-none">Retry Connection</button>
           </div>
         </div>
       </div>

@@ -5,17 +5,17 @@ from typing import Any, Dict
 from actuary_engine.api.schemas import StochasticValuationRequest, StochasticValuationResponse, QuantileTrajectory, TerminalDistribution
 from actuary_engine.models.assumptions import ExpenseAssumption, InterestAssumption
 from actuary_engine.models.contracts import PolicyContract
-from actuary_engine.pricing.premium import LevelPremiumCalculator
-from actuary_engine.stochastic.dynamic_lapse import DynamicLapseModel
-from actuary_engine.stochastic.esg import VasicekESG
-from actuary_engine.stochastic.monte_carlo import (
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.stochastic.dynamic_lapse import DynamicLapseModel
+from actuary_engine.domain.stochastic.esg import VasicekESG
+from actuary_engine.domain.stochastic.monte_carlo import (
     StochasticValuationEngine,
     compute_quantile_trajectory,
     compute_terminal_distribution,
     sample_representative_paths,
 )
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 def _cpu_worker_task(request_dict: dict[str, Any], table_dict: dict[str, Any], progress_queue: multiprocessing.Queue) -> dict[str, Any]:

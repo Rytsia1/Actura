@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from actuary_engine.api.main import app
-from actuary_engine.stochastic.monte_carlo import (
+from actuary_engine.main import app
+from actuary_engine.domain.stochastic.monte_carlo import (
     compute_quantile_trajectory,
     compute_terminal_distribution,
     sample_representative_paths,

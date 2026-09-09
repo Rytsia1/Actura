@@ -38,7 +38,7 @@ from actuary_engine.models.assumptions import (
     LapseAssumption,
 )
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 from actuary_engine.valuation._kernels import _rollback_gpv_kernel
 
 

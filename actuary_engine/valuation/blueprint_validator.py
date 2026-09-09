@@ -11,7 +11,7 @@ from actuary_engine.api.schemas import (
     ValidationResult,
     ValidationSeverity,
 )
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.tables.registry import table_registry
 
 
 class BlueprintValidator:

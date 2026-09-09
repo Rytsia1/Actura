@@ -29,7 +29,7 @@ from actuary_engine.api.schemas import (
     ModelHealthReport,
     ValidationSeverity,
 )
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.tables.registry import table_registry
 from actuary_engine.infrastructure.assumption_repo import assumption_repo
 
 

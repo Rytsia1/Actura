@@ -8,14 +8,14 @@ import pytest
 import numpy as np
 from fastapi.testclient import TestClient
 
-from actuary_engine.curves.yield_curve import MarketYieldCurve
-from actuary_engine.stochastic.esg_advanced import (
+from actuary_engine.domain.curves.yield_curve import MarketYieldCurve
+from actuary_engine.domain.stochastic.esg_advanced import (
     CIRModel,
     CIRParams,
     HullWhite1FModel,
     HullWhiteParams,
 )
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 
 
 class TestMarketYieldCurve:

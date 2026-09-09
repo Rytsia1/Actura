@@ -14,14 +14,14 @@ from actuary_engine.models.assumptions import (
     LapseAssumption,
 )
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.tables.registry import table_registry
 from actuary_engine.valuation.ifrs17 import (
     IFRS17CohortClassification,
     IFRS17Engine,
     IFRS17InitialBalance,
     IFRS17ValuationResult,
 )
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 
 
 @pytest.fixture(scope="session")

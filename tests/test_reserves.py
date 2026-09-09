@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.pricing.premium import LevelPremiumCalculator
-from actuary_engine.tables.commutation import CommutationFunctions
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.tables.commutation import CommutationFunctions
 from actuary_engine.valuation.reserves import ReserveCalculator
 
 

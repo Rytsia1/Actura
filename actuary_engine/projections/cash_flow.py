@@ -20,7 +20,7 @@ import pandas as pd
 
 from actuary_engine.models.assumptions import InterestAssumption
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 class CashFlowProjector:

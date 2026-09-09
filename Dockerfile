@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Create python wheels for all dependencies
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 
 
 # Stage 2: Runtime
@@ -46,4 +46,4 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "actuary_engine.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "actuary_engine.main:app", "--host", "0.0.0.0", "--port", "8000"]

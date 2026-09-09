@@ -8,7 +8,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 
 client = TestClient(app)
 

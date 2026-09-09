@@ -5,8 +5,8 @@ Tests for SurvivalCurve: survival probabilities, life expectancy, and curve prop
 import numpy as np
 import pytest
 
-from actuary_engine.curves.survival import SurvivalCurve
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.curves.survival import SurvivalCurve
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 
 
 class TestSurvivalCurveProperties:

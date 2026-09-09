@@ -7,14 +7,14 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from actuary_engine.api.main import app
+from actuary_engine.main import app
 from actuary_engine.models.assumptions import (
     ExpenseAssumption,
     InterestAssumption,
     LapseAssumption,
 )
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.tables.registry import table_registry
+from actuary_engine.domain.tables.registry import table_registry
 from actuary_engine.valuation.sensitivity import (
     CombinedScenarioResult,
     SensitivityBaselineMetrics,

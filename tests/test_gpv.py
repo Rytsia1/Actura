@@ -19,9 +19,9 @@ from actuary_engine.models.assumptions import (
     LapseAssumption,
 )
 from actuary_engine.models.contracts import PolicyContract, ProductType
-from actuary_engine.pricing.premium import LevelPremiumCalculator
-from actuary_engine.tables.commutation import CommutationFunctions
-from actuary_engine.tables.mortality_table import MortalityTable
+from actuary_engine.domain.pricing.premium import LevelPremiumCalculator
+from actuary_engine.domain.tables.commutation import CommutationFunctions
+from actuary_engine.domain.tables.mortality_table import MortalityTable
 from actuary_engine.valuation.gpv import GrossPremiumValuation
 
 

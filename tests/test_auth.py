@@ -9,9 +9,15 @@ from passlib.context import CryptContext
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Remove the test dependency override for auth so we can test the real endpoints
 from actuary_engine.api.dependencies import get_current_user
-app.dependency_overrides.pop(get_current_user, None)
+
+@pytest.fixture(autouse=True)
+def clean_dependency_overrides():
+    old = dict(app.dependency_overrides)
+    app.dependency_overrides.pop(get_current_user, None)
+    yield
+    app.dependency_overrides.clear()
+    app.dependency_overrides.update(old)
 
 @pytest.fixture(scope="module")
 def real_client() -> TestClient:
@@ -21,8 +27,13 @@ def real_client() -> TestClient:
 def setup_users():
     org = auth_repo.create_organization("Test Org")
     
-    admin = auth_repo.create_user("testadmin", pwd_context.hash("admin123"), "Admin", org["id"])
-    viewer = auth_repo.create_user("testviewer", pwd_context.hash("viewer123"), "Viewer", org["id"])
+    admin = auth_repo.get_user_by_username("testadmin")
+    if not admin:
+        admin = auth_repo.create_user("testadmin", pwd_context.hash("admin123"), "Admin", org["id"])
+    
+    viewer = auth_repo.get_user_by_username("testviewer")
+    if not viewer:
+        viewer = auth_repo.create_user("testviewer", pwd_context.hash("viewer123"), "Viewer", org["id"])
     
     return {
         "admin": admin,
@@ -74,9 +85,7 @@ def test_rbac_viewer_denied_post(real_client: TestClient, setup_users):
         "product_type": "endowment",
         "issue_age": 30,
         "sum_assured": 100000,
-        "interest_rate": 0.05,
-        "expense": "{}",
-        "lapse": "{}"
+        "interest_rate": 0.05
     }, headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 403
     assert "Operation not permitted" in response.json()["detail"]
