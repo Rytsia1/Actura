@@ -14,6 +14,7 @@ const actions = [
   { id: 'run_valuation', title: 'Run Valuation Engine', subtitle: 'Execute deterministic and stochastic engines', icon: Play, color: 'text-sky-400', group: 'ACTIONS' },
   { id: 'export_csv', title: 'Export Valuation CSV', subtitle: 'Download reserve profiles as CSV', icon: Download, color: 'text-emerald-400', group: 'ACTIONS' },
   { id: 'upload_table', title: 'Upload Mortality Table', subtitle: 'Import custom CSV mortality assumptions', icon: Upload, color: 'text-amber-400', group: 'ACTIONS' },
+  { id: 'view_scenarios', title: 'Scenario Workbench', subtitle: 'Define and run assumption scenarios against base models', icon: Activity, color: 'text-indigo-400', group: 'ACTIONS' },
   { id: 'view_history', title: 'View Run History', subtitle: 'See previous valuation parameters', icon: Clock, color: 'text-purple-400', group: 'ACTIONS' },
   { id: 'tab_overview', title: 'Overview Dashboard', subtitle: 'Switch to main summary', icon: LayoutDashboard, color: 'text-slate-400', group: 'NAVIGATION' },
   { id: 'tab_sensitivity', title: 'Sensitivity Analysis', subtitle: 'Switch to stress testing', icon: Target, color: 'text-rose-400', group: 'NAVIGATION' }

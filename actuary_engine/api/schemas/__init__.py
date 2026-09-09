@@ -4,14 +4,387 @@ Pydantic Request and Response schemas for the Actuarial Valuation API.
 
 from __future__ import annotations
 
+import time
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
 from actuary_engine.models.assumptions import ExpenseAssumption, LapseAssumption
 from actuary_engine.models.contracts import ProductType
 from actuary_engine.domain.stochastic.dynamic_lapse import DynamicLapseParams
 from actuary_engine.domain.stochastic.esg import VasicekParams
+
+
+# ────────────────────────────────────────────────────────────
+# Assumption Management Schemas
+# ────────────────────────────────────────────────────────────
+
+class AssumptionType(str, Enum):
+    MORTALITY = "mortality"
+    LAPSE = "lapse"
+    EXPENSE = "expense"
+    INTEREST = "interest"
+    INFLATION = "inflation"
+    ECONOMIC = "economic"
+
+class AssumptionCreate(BaseModel):
+    """Schema for creating a completely new assumption."""
+    name: str = Field(..., description="Name of the assumption.")
+    type: AssumptionType = Field(..., description="Category of the assumption.")
+    description: str = Field(default="", description="Detailed description.")
+    source: str = Field(default="", description="Source or methodology reference.")
+    effective_date: str = Field(default="", description="Effective date (YYYY-MM-DD).")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Configuration parameters.")
+
+class AssumptionVersionCreate(BaseModel):
+    """Schema for creating a new version of an existing assumption."""
+    name: Optional[str] = Field(default=None, description="Name (if changed).")
+    type: Optional[AssumptionType] = Field(default=None, description="Category (if changed).")
+    description: str = Field(default="", description="Detailed description.")
+    source: str = Field(default="", description="Source or methodology reference.")
+    effective_date: str = Field(default="", description="Effective date (YYYY-MM-DD).")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Configuration parameters.")
+
+class AssumptionRead(BaseModel):
+    """Schema for returning assumption records."""
+    id: str
+    version: int
+    name: str
+    type: AssumptionType
+    description: str
+    source: str
+    effective_date: str
+    status: str
+    parameters: dict[str, Any]
+    created_by: str
+    created_at: float
+    updated_at: float
+
+class AssumptionReference(BaseModel):
+    """Reference tracking exactly which version of an assumption was used."""
+    assumption_id: str
+    version: int
+
+class AssumptionStatusUpdate(BaseModel):
+    status: str = Field(..., description="ACTIVE or INACTIVE")
+
+
+# ────────────────────────────────────────────────────────────
+# Scenario Management Schemas
+# ────────────────────────────────────────────────────────────
+
+class ScenarioAssumptionOverrides(BaseModel):
+    """Assumption variations and shocks relative to a base model."""
+    interest_rate_bps: Optional[float] = Field(
+        default=None, description="Shift in discount rate basis points, e.g. -100 for -100 bps."
+    )
+    interest_rate_delta: Optional[float] = Field(
+        default=None, description="Direct additive shift in annual interest rate, e.g. -0.01."
+    )
+    interest_rate_override: Optional[float] = Field(
+        default=None, description="Absolute replacement for annual interest rate."
+    )
+    mortality_multiplier: Optional[float] = Field(
+        default=None, description="Multiplicative factor on mortality rates, e.g. 1.10 for +10%."
+    )
+    mortality_table_id: Optional[str] = Field(
+        default=None, description="Alternative mortality table ID."
+    )
+    lapse_multiplier: Optional[float] = Field(
+        default=None, description="Multiplicative factor on lapse rates, e.g. 1.20."
+    )
+    lapse_rate_delta: Optional[float] = Field(
+        default=None, description="Additive shift on annual lapse rates, e.g. 0.05 for +5%."
+    )
+    lapse_override: Optional[float] = Field(
+        default=None, description="Absolute replacement for flat annual lapse rate."
+    )
+    expense_multiplier: Optional[float] = Field(
+        default=None, description="Multiplicative factor on expenses, e.g. 1.10 for +10%."
+    )
+    expense_inflation_pct: Optional[float] = Field(
+        default=None, description="Expense inflation percentage."
+    )
+    custom_overrides: Optional[dict[str, Any]] = Field(
+        default_factory=dict, description="Custom extensible overrides."
+    )
+
+
+class ScenarioCreate(BaseModel):
+    """Schema for creating a new actuarial scenario."""
+    id: Optional[str] = Field(default=None, description="Optional unique identifier (auto-generated if omitted).")
+    name: str = Field(..., description="Descriptive name of the scenario.")
+    description: str = Field(default="", description="Detailed narrative of scenario purpose and assumptions.")
+    base_model_id: str = Field(default="default-endowment", description="Reference identifier to immutable base model.")
+    overrides: ScenarioAssumptionOverrides = Field(
+        default_factory=ScenarioAssumptionOverrides, description="Assumption overrides relative to base model."
+    )
+    status: str = Field(default="ACTIVE", description="Scenario status (ACTIVE, DRAFT, ARCHIVED).")
+
+
+class ScenarioUpdate(BaseModel):
+    """Schema for updating an existing scenario."""
+    name: Optional[str] = Field(default=None, description="Updated name.")
+    description: Optional[str] = Field(default=None, description="Updated description.")
+    base_model_id: Optional[str] = Field(default=None, description="Updated base model reference.")
+    overrides: Optional[ScenarioAssumptionOverrides] = Field(default=None, description="Updated overrides.")
+    status: Optional[str] = Field(default=None, description="Updated status.")
+
+
+class ScenarioRead(BaseModel):
+    """Schema for scenario response record."""
+    id: str
+    name: str
+    description: str
+    base_model_id: str
+    overrides: dict[str, Any]
+    status: str
+    created_at: float
+    updated_at: float
+
+
+class BaseModelCreate(BaseModel):
+    """Schema for defining a reusable base actuarial model."""
+    id: Optional[str] = Field(default=None, description="Unique model identifier.")
+    name: str = Field(..., description="Model name.")
+    description: str = Field(default="", description="Model description.")
+    product_type: ProductType = Field(default=ProductType.ENDOWMENT, description="Insurance product type.")
+    issue_age: int = Field(default=30, ge=0, description="Policyholder issue age.")
+    term: Optional[int] = Field(default=20, gt=0, description="Policy term in years.")
+    sum_assured: float = Field(default=1_000_000.0, gt=0.0, description="Sum assured.")
+    premium_paying_term: Optional[int] = Field(default=None, gt=0, description="Premium paying term.")
+    interest_rate: float = Field(default=0.05, ge=0.0, le=0.50, description="Baseline annual interest rate.")
+    table_id: str = Field(default="soa_ilt", description="Mortality table identifier.")
+    expense: Optional[ExpenseAssumption] = Field(default=None, description="Baseline expense loadings.")
+    lapse: Optional[LapseAssumption] = Field(default=None, description="Baseline lapse assumptions.")
+    gross_premium: Optional[float] = Field(default=None, gt=0.0, description="Fixed gross premium override.")
+
+class BaseModelUpdate(BaseModel):
+    """Schema for updating an existing base model."""
+    name: Optional[str] = Field(default=None, description="Model name.")
+    description: Optional[str] = Field(default=None, description="Model description.")
+    product_type: Optional[ProductType] = Field(default=None, description="Insurance product type.")
+    issue_age: Optional[int] = Field(default=None, ge=0, description="Policyholder issue age.")
+    term: Optional[int] = Field(default=None, gt=0, description="Policy term in years.")
+    sum_assured: Optional[float] = Field(default=None, gt=0.0, description="Sum assured.")
+    premium_paying_term: Optional[int] = Field(default=None, gt=0, description="Premium paying term.")
+    interest_rate: Optional[float] = Field(default=None, ge=0.0, le=0.50, description="Baseline annual interest rate.")
+    table_id: Optional[str] = Field(default=None, description="Mortality table identifier.")
+    expense: Optional[ExpenseAssumption] = Field(default=None, description="Baseline expense loadings.")
+    lapse: Optional[LapseAssumption] = Field(default=None, description="Baseline lapse assumptions.")
+    gross_premium: Optional[float] = Field(default=None, gt=0.0, description="Fixed gross premium override.")
+
+
+class BaseModelRead(BaseModel):
+    """Schema for reading base model information."""
+    id: str
+    name: str
+    description: str
+    product_type: str
+    issue_age: int
+    term: Optional[int]
+    sum_assured: float
+    premium_paying_term: Optional[int]
+    interest_rate: float
+    table_id: str
+    expense: dict[str, Any]
+    lapse: dict[str, Any]
+    gross_premium: Optional[float]
+    lifecycle_status: str
+    created_at: float
+    updated_at: float
+
+class ModelStatusUpdate(BaseModel):
+    """Schema for updating the lifecycle status of a model."""
+    status: str = Field(..., description="Target status (Draft, Validated, Submitted, Under Review, Approved, Locked, Rejected)")
+
+class AuditLogRead(BaseModel):
+    """Schema for reading audit logs."""
+    id: str
+    user_id: str
+    entity_type: str
+    entity_id: str
+    action: str
+    previous_value: Optional[dict[str, Any]]
+    new_value: Optional[dict[str, Any]]
+    run_id: Optional[str]
+    timestamp: float
+
+
+class ScenarioValidationResult(BaseModel):
+    """Result of validating scenario overrides against actuarial domain rules."""
+    scenario_id: str
+    is_valid: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    effective_assumptions: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioExecutionResponse(BaseModel):
+    """Response payload produced by executing a scenario valuation."""
+    scenario_id: str
+    scenario_name: str
+    base_model_id: str
+    valuation_type: str = "Scenario"
+    status: str = "COMPLETED"
+    job_id: str
+    effective_interest_rate: float
+    effective_mortality_multiplier: float
+    effective_lapse_rate: float
+    effective_expense_multiplier: float
+    bel: float
+    baseline_bel: Optional[float] = None
+    delta_bel: Optional[float] = None
+    pct_change_bel: Optional[float] = None
+    csm: Optional[float] = None
+    profit_loss: Optional[float] = None
+    annual_net_premium: float
+    annual_gross_premium: float
+    nsp: float
+    annuity_factor: float
+    reserve_profile: list[dict[str, Any]] = Field(default_factory=list)
+    cash_flows: list[dict[str, Any]] = Field(default_factory=list)
+    reproducibility: dict[str, Any] = Field(default_factory=dict)
+
+
+# ────────────────────────────────────────────────────────────
+# First-Class Sensitivity Analysis Schemas (Task 10)
+# ────────────────────────────────────────────────────────────
+
+class SensitivityShockConfig(BaseModel):
+    """Configurable shock ranges across supported actuarial risk factors."""
+    mortality_shocks: Optional[list[float]] = Field(
+        default=None,
+        description="Relative shifts for mortality (e.g., [-0.20, -0.10, 0.0, 0.10, 0.20]).",
+    )
+    interest_shocks_bps: Optional[list[float]] = Field(
+        default=None,
+        description="Basis point shifts for discount rate (e.g., [-200, -100, 0, 100, 200]).",
+    )
+    lapse_shocks: Optional[list[float]] = Field(
+        default=None,
+        description="Relative shifts for lapse decrements (e.g., [-0.20, -0.10, 0.0, 0.10, 0.20]).",
+    )
+    expense_shocks: Optional[list[float]] = Field(
+        default=None,
+        description="Relative shifts for expense parameters (e.g., [-0.20, -0.10, 0.0, 0.10, 0.20]).",
+    )
+
+
+class SensitivityAnalysisRequest(BaseModel):
+    """Request payload for running first-class sensitivity analysis against a base model."""
+    base_model_id: str = Field(default="default-endowment", description="Base model to analyze.")
+    target_metric: Literal["bel", "csm", "profit_loss"] = Field(
+        default="bel",
+        description="Target valuation metric to analyze and rank drivers for.",
+    )
+    shocks: Optional[SensitivityShockConfig] = Field(
+        default=None,
+        description="Configurable shock ranges. Uses actuarial standard defaults if omitted.",
+    )
+
+
+class SensitivityGridPoint(BaseModel):
+    """Single evaluated shock point in the sensitivity grid."""
+    variable: str = Field(..., description="Assumption variable (mortality, discount_rate, lapse, expense).")
+    variable_label: str = Field(..., description="Human-readable variable label.")
+    shock_label: str = Field(..., description="Formatted shock label (e.g. '+10%', '-100 bps', 'Base').")
+    shock_value: float = Field(..., description="Numeric shock magnitude.")
+    resulting_metric: float = Field(..., description="Resulting value for target_metric.")
+    absolute_change: float = Field(..., description="Absolute delta (Metric_shocked - Metric_base).")
+    percentage_change: float = Field(..., description="Percentage shift relative to base metric.")
+    bel: float = Field(..., description="Best Estimate Liability under this shock.")
+    csm: float = Field(..., description="Contractual Service Margin under this shock.")
+    profit_loss: float = Field(..., description="PV of underwriting profit under this shock.")
+
+
+class SensitivityDriverItem(BaseModel):
+    """Valuation driver summary ranking assumptions by absolute impact."""
+    rank: int = Field(..., description="Impact rank (1 = highest driver).")
+    variable: str = Field(..., description="Assumption variable key.")
+    variable_label: str = Field(..., description="Human-readable assumption name.")
+    swing: float = Field(..., description="Max swing: max(metric) - min(metric).")
+    swing_pct: float = Field(..., description="Swing as percentage of base metric value.")
+    max_abs_change: float = Field(..., description="Maximum absolute shift from baseline.")
+    min_metric: float = Field(..., description="Lowest metric value across tested shocks.")
+    max_metric: float = Field(..., description="Highest metric value across tested shocks.")
+    most_adverse_shock: str = Field(..., description="Shock causing the most adverse valuation outcome.")
+    most_favorable_shock: str = Field(..., description="Shock causing the most favorable valuation outcome.")
+
+
+class SensitivityAnalysisResponse(BaseModel):
+    """Complete response payload for first-class sensitivity analysis."""
+    analysis_id: str
+    base_model_id: str
+    base_model_name: str
+    target_metric: str
+    base_metric_value: float
+    base_bel: float
+    base_csm: float
+    base_profit_loss: float
+    drivers: list[SensitivityDriverItem] = Field(default_factory=list)
+    grid_points: list[SensitivityGridPoint] = Field(default_factory=list)
+    job_id: str
+    created_at: float
+    reproducibility: dict[str, Any] = Field(default_factory=dict)
+
+
+# ────────────────────────────────────────────────────────────
+# Run Comparison Schemas (Task 11)
+# ────────────────────────────────────────────────────────────
+
+class RunComparisonRequest(BaseModel):
+    """Request to compare two valuation runs."""
+    run_a_id: str = Field(..., description="Job ID of the baseline run (Run A).")
+    run_b_id: str = Field(..., description="Job ID of the comparison run (Run B).")
+
+
+class MetricComparisonItem(BaseModel):
+    """Comparative valuation metric row showing Run A, Run B, and deltas."""
+    metric_key: str
+    metric_label: str
+    category: str = "liability"  # liability, cash_flow, risk, profitability
+    value_a: Optional[float] = None
+    value_b: Optional[float] = None
+    absolute_delta: Optional[float] = None
+    percentage_delta: Optional[float] = None
+    unit: str = "$"
+
+
+class ConfigComparisonItem(BaseModel):
+    """Comparative configuration parameter showing Run A, Run B, and change status."""
+    element_key: str
+    label: str
+    value_a: Any
+    value_b: Any
+    has_changed: bool
+    change_summary: str
+
+
+class RunSummaryInfo(BaseModel):
+    """High-level summary of a valuation run for comparison header."""
+    job_id: str
+    valuation_type: str
+    status: str
+    created_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    duration_seconds: Optional[float] = None
+    model_name: Optional[str] = None
+    scenario_name: Optional[str] = None
+    engine_version: Optional[str] = None
+
+
+class RunComparisonResponse(BaseModel):
+    """Complete comparison payload between two valuation runs."""
+    run_a: RunSummaryInfo
+    run_b: RunSummaryInfo
+    metrics: list[MetricComparisonItem] = Field(default_factory=list)
+    configurations: list[ConfigComparisonItem] = Field(default_factory=list)
+    changed_elements: list[str] = Field(default_factory=list)
+    summary_explanation: str
+
+
+
 
 
 # ────────────────────────────────────────────────────────────
@@ -70,6 +443,9 @@ class DeterministicValuationRequest(BaseModel):
     lapse: Optional[LapseAssumption] = Field(
         default=None, description="Policyholder lapse decrement rates."
     )
+    assumption_refs: Optional[list[AssumptionReference]] = Field(
+        default=None, description="List of exact assumption versions utilized."
+    )
 
 
 class DeterministicValuationResponse(BaseModel):
@@ -117,7 +493,10 @@ class StochasticValuationRequest(BaseModel):
     n_scenarios: int = Field(
         default=2000, ge=50, le=50000, description="Number of Monte Carlo scenario paths."
     )
-    seed: Optional[int] = Field(default=42, description="Random seed for reproducibility.")
+    seed: Optional[int] = Field(default=None, description="Random seed for reproducibility. Auto-generated if omitted.")
+    assumption_refs: Optional[list[AssumptionReference]] = Field(
+        default=None, description="List of exact assumption versions utilized."
+    )
 
 
 class QuantileTrajectory(BaseModel):
@@ -176,6 +555,22 @@ class AsyncJobCreateResponse(BaseModel):
     ws_endpoint: str = Field(..., description="WebSocket URI for streaming progress.")
 
 
+class RunMetadata(BaseModel):
+    """Reproducibility metadata capturing the exact computational identity of a run."""
+    seed: int = Field(..., description="The exact random seed used.")
+    n_scenarios: int = Field(..., description="Number of paths generated.")
+    product_type: str = Field(..., description="Insurance product type.")
+    issue_age: int = Field(..., description="Issue age.")
+    term: Optional[int] = Field(..., description="Coverage term.")
+    sum_assured: float = Field(..., description="Sum assured / Face amount.")
+    table_id: str = Field(..., description="Mortality table identifier.")
+    economic_model: str = Field(..., description="Economic model used (e.g. VASICEK).")
+    economic_parameters: dict[str, Any] = Field(..., description="Parameters of the economic model.")
+    engine_version: str = Field(default="0.2.3", description="Version of Actura.")
+    creation_timestamp: float = Field(..., description="Unix timestamp of run creation.")
+    dependency_versions: dict[str, str] = Field(default_factory=dict, description="Versions of critical libraries.")
+
+
 class AsyncJobStatusResponse(BaseModel):
     """Polling response schema for job status."""
 
@@ -187,6 +582,8 @@ class AsyncJobStatusResponse(BaseModel):
     partial_metrics: Optional[dict[str, Any]] = None
     result: Optional[StochasticValuationResponse] = None
     error: Optional[str] = None
+    run_metadata: Optional[RunMetadata] = None
+    original_request: Optional[dict[str, Any]] = None
 
 
 # ────────────────────────────────────────────────────────────
@@ -451,6 +848,29 @@ class StressTestResponse(BaseModel):
 # Visual Node-Based Contract Logic Builder Schemas
 # ────────────────────────────────────────────────────────────
 
+class ValidationSeverity(str, Enum):
+    """Severity level of a blueprint validation issue."""
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+    INFO = "INFO"
+
+
+class ValidationIssue(BaseModel):
+    """A single detected validation issue in the contract logic blueprint."""
+    severity: ValidationSeverity
+    code: str
+    message: str
+    node_id: Optional[str] = None
+    field: Optional[str] = None
+    suggested_fix: Optional[str] = None
+
+
+class ValidationResult(BaseModel):
+    """Aggregate result of a blueprint validation pass."""
+    is_valid: bool = Field(description="True if the blueprint has zero ERROR level issues.")
+    issues: list[ValidationIssue] = Field(default_factory=list, description="Detected issues.")
+
+
 class GraphNodeData(BaseModel):
     """Single node specification in the visual contract builder DAG."""
 
@@ -470,6 +890,21 @@ class GraphEdgeData(BaseModel):
     targetHandle: Optional[str] = Field(default=None, description="Destination port handle.")
 
 
+class GuidedTermLifeRequest(BaseModel):
+    """Parameters required to automatically generate a Term Life blueprint."""
+
+    product_type: str = Field(default="term_life", description="Product type identifier.")
+    issue_age: int = Field(default=35, ge=0, description="Entry age.")
+    term: int = Field(default=20, gt=0, description="Policy term in years.")
+    sum_assured: float = Field(default=1_000_000.0, gt=0.0, description="Face amount.")
+    premium_freq: str = Field(default="annual", description="Premium payment frequency.")
+    table_id: str = Field(default="soa_ilt", description="Mortality table identifier.")
+    interest_rate: float = Field(default=0.05, ge=0.0, le=0.50, description="Discount / Interest rate.")
+    lapse_rate: Optional[float] = Field(default=0.03, ge=0.0, le=1.0, description="Annual lapse rate.")
+    expense_first_year_pct: Optional[float] = Field(default=0.35, ge=0.0, le=1.0, description="Percentage of first year premium.")
+    expense_renewal_pct: Optional[float] = Field(default=0.05, ge=0.0, le=1.0, description="Percentage of renewal premium.")
+
+
 class ContractGraphPayload(BaseModel):
     """Complete serialized node-graph payload submitted for cash flow valuation."""
 
@@ -477,6 +912,17 @@ class ContractGraphPayload(BaseModel):
     nodes: list[GraphNodeData] = Field(default_factory=list, description="List of nodes in the graph.")
     edges: list[GraphEdgeData] = Field(default_factory=list, description="List of directed edges in the graph.")
     discount_rate: Optional[float] = Field(default=0.05, ge=0.0, le=0.50, description="Valuation discount rate.")
+
+
+class ProvenanceTrace(BaseModel):
+    """Domain-level explanation tracking calculation lineage from result to blueprint nodes."""
+    metric_name: str = Field(description="Name of the metric being explained.")
+    value: float = Field(description="Final computed value.")
+    contributing_components: list[str] = Field(default_factory=list, description="Cash flow or calculation components contributing to this value.")
+    relevant_assumptions: dict[str, str] = Field(default_factory=dict, description="Key assumptions driving the calculation.")
+    source_nodes: list[str] = Field(default_factory=list, description="IDs of blueprint nodes contributing to this calculation.")
+    calculation_stage: str = Field(description="High-level valuation stage (e.g. 'Present Value Aggregation').")
+    calculation_description: str = Field(description="Actuary-friendly narrative explaining the result.")
 
 
 class SimulateGraphResponse(BaseModel):
@@ -501,6 +947,58 @@ class SimulateGraphResponse(BaseModel):
     discounted_net_cf: list[float]
     reserves: list[float]
     breakdown: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, ProvenanceTrace] = Field(default_factory=dict, description="Deterministic calculation provenance traces mapping metrics back to source nodes.")
+
+
+# ────────────────────────────────────────────────────────────
+# Model Health Schemas (Task 14)
+# ────────────────────────────────────────────────────────────
+
+class HealthStatus(str, Enum):
+    """Overall and categorical health status indicator."""
+    PASS = "PASS"
+    WARNING = "WARNING"
+    FAIL = "FAIL"
+
+
+class HealthIssue(BaseModel):
+    """Specific detected defect, risk, or validation note with deep linking metadata."""
+    code: str = Field(description="Machine-readable issue code.")
+    severity: ValidationSeverity = Field(description="Severity: ERROR, WARNING, INFO.")
+    message: str = Field(description="Human-readable explanation of the issue.")
+    node_id: Optional[str] = Field(default=None, description="Linked DAG node identifier.")
+    field: Optional[str] = Field(default=None, description="Linked parameter field name.")
+    assumption_id: Optional[str] = Field(default=None, description="Linked assumption identifier.")
+    suggested_fix: Optional[str] = Field(default=None, description="Actionable recommendation to fix the issue.")
+
+
+class ModelHealthCategory(BaseModel):
+    """Individual health evaluation across one of the 7 standardized categories."""
+    name: str = Field(description="Category name.")
+    status: HealthStatus = Field(description="Categorical status: PASS, WARNING, FAIL.")
+    score: int = Field(ge=0, le=100, description="Category score out of 100.")
+    issues: list[HealthIssue] = Field(default_factory=list, description="Blocking errors detected.")
+    warnings: list[HealthIssue] = Field(default_factory=list, description="Non-blocking actuarial concerns.")
+    recommendations: list[str] = Field(default_factory=list, description="Actionable advice for achieving 100% health.")
+    metrics: dict[str, Any] = Field(default_factory=dict, description="Detailed diagnostic metrics.")
+
+
+class ModelHealthReport(BaseModel):
+    """Comprehensive Model Health report evaluating readiness and audit trust."""
+    overall_status: HealthStatus = Field(description="Overall health status: PASS, WARNING, or FAIL.")
+    is_ready_to_run: bool = Field(description="True if model can be safely executed without blocking errors.")
+    overall_score: int = Field(ge=0, le=100, description="Explainable health score from 0 to 100.")
+    score_breakdown: list[str] = Field(default_factory=list, description="Itemized, explainable score calculation.")
+    categories: dict[str, ModelHealthCategory] = Field(description="Detailed evaluations for each of the 7 categories.")
+    summary_headline: str = Field(description="Short executive takeaway.")
+    created_at: float = Field(default_factory=time.time, description="Unix evaluation timestamp.")
+
+
+class ModelHealthRequest(BaseModel):
+    """Request payload to evaluate model health from either a visual graph or model configuration."""
+    blueprint: Optional[ContractGraphPayload] = None
+    configuration: Optional[dict[str, Any]] = None
+
 
 
 

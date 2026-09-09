@@ -14,7 +14,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from actuary_engine.api.schemas import ContractGraphPayload, SimulateGraphResponse
+from actuary_engine.api.schemas import ContractGraphPayload, SimulateGraphResponse, ProvenanceTrace
 from actuary_engine.models.assumptions import (
     ExpenseAssumption,
     InterestAssumption,
@@ -68,10 +68,12 @@ class ContractGraphSimulator:
 
         # 2. Extract Policy Metadata from PolicyInput node
         policy_node = None
+        policy_node_id = None
         for node in payload.nodes:
             ntype = (node.type or "").lower()
             if ntype in ("policyinput", "policy_input", "input"):
                 policy_node = node
+                policy_node_id = node.id
                 break
 
         data = policy_node.data if policy_node else {}
@@ -93,10 +95,13 @@ class ContractGraphSimulator:
         lapse_rate = 0.03
         has_maturity = False
         maturity_year = term
+        
+        contingency_node_ids = []
 
         for node in payload.nodes:
             ntype = (node.type or "").lower()
             if ntype in ("contingency", "decrement"):
+                contingency_node_ids.append(node.id)
                 ndata = node.data
                 dtype = str(ndata.get("decrement_type", "Mortality")).lower()
                 mult = float(ndata.get("multiplier", 1.0))
@@ -138,11 +143,14 @@ class ContractGraphSimulator:
         expense_per_pol_renewal = 20.0
         is_unit_linked = False
         fund_growth_rate = 0.06
+        
+        outflow_node_ids = []
 
         for node in payload.nodes:
             ntype = (node.type or "").lower()
             ndata = node.data
             if ntype in ("outflow", "benefit"):
+                outflow_node_ids.append(node.id)
                 btype = str(ndata.get("benefit_type", "Death Benefit")).lower()
                 formula = str(ndata.get("formula", "1.0 * SA")).lower()
 
@@ -175,14 +183,19 @@ class ContractGraphSimulator:
 
         # Check if inflow node has explicit amount
         explicit_premium = None
+        inflow_node_ids = []
+        sink_node_ids = []
         for node in payload.nodes:
             ntype = (node.type or "").lower()
             if ntype in ("inflow", "premium"):
+                inflow_node_ids.append(node.id)
                 ndata = node.data
                 mode = str(ndata.get("mode", "fixed")).lower()
                 amt = ndata.get("amount")
                 if mode == "fixed" and amt is not None and float(amt) > 0:
                     explicit_premium = float(amt)
+            elif ntype in ("valuationsink", "valuation_sink", "sink"):
+                sink_node_ids.append(node.id)
 
         if explicit_premium is not None:
             annual_premium = explicit_premium
@@ -277,6 +290,42 @@ class ContractGraphSimulator:
             max_t=int(term),
         )
 
+        # 7. Calculation Provenance Layer
+        provenance = {}
+        
+        # Helper to safely append valid IDs
+        def _get_nodes(*lists):
+            nodes = []
+            for lst in lists:
+                if lst:
+                    if isinstance(lst, str): nodes.append(lst)
+                    else: nodes.extend(lst)
+            return list(set(nodes))
+        
+        provenance["total_bel"] = ProvenanceTrace(
+            metric_name="Best Estimate Liability (BEL)",
+            value=round(total_bel, 2),
+            contributing_components=["Premiums", "Death Claims", "Surrender Payouts", "Maturity Benefits", "Expenses"],
+            relevant_assumptions={
+                "Discount Rate": f"{interest_rate * 100:.2f}%",
+                "Mortality Table": table.name,
+                "Lapse Rate": f"{lapse_rate * 100:.2f}%"
+            },
+            source_nodes=_get_nodes(policy_node_id, sink_node_ids, outflow_node_ids, contingency_node_ids),
+            calculation_stage="Present Value Aggregation",
+            calculation_description="Computed as the sum of discounted future expected benefit and expense outflows, minus the discounted future expected premium inflows."
+        )
+
+        provenance["annual_premium"] = ProvenanceTrace(
+            metric_name="Annual Premium",
+            value=round(annual_premium, 2),
+            contributing_components=["Gross Premium"],
+            relevant_assumptions={},
+            source_nodes=_get_nodes(inflow_node_ids, policy_node_id),
+            calculation_stage="Premium Determination",
+            calculation_description="Annual premium collected at the beginning of each policy year from the active in-force cohort."
+        )
+
         return SimulateGraphResponse(
             contract_id=payload.contract_id or "GRAPH-CONTRACT-01",
             product_name=product_name,
@@ -308,4 +357,5 @@ class ContractGraphSimulator:
                 "node_count": len(payload.nodes),
                 "edge_count": len(payload.edges),
             },
+            provenance=provenance,
         )

@@ -1,11 +1,21 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import LoginView from '../views/LoginView.vue'
 import ProjectDashboardView from '../views/ProjectDashboardView.vue'
 import ContractBuilderView from '../views/ContractBuilderView.vue'
 import MainDashboard from '../views/MainDashboard.vue'
 import TermsOfService from '../views/TermsOfService.vue'
 import PrivacyPolicy from '../views/PrivacyPolicy.vue'
+import GuidedModeView from '../views/GuidedModeView.vue'
+import AssumptionLibraryView from '../views/AssumptionLibraryView.vue'
+import ScenarioManagementView from '../views/ScenarioManagementView.vue'
+import SensitivityAnalysisView from '../views/SensitivityAnalysisView.vue'
 
 const routes = [
+  {
+    path: '/login',
+    name: 'Login',
+    component: LoginView,
+  },
   {
     path: '/',
     name: 'Dashboard',
@@ -15,10 +25,46 @@ const routes = [
     path: '/sandbox',
     name: 'Sandbox',
     component: MainDashboard,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/guided',
+    name: 'GuidedMode',
+    component: GuidedModeView,
+  },
+  {
+    path: '/assumptions',
+    name: 'Assumptions',
+    component: AssumptionLibraryView,
+  },
+  {
+    path: '/scenarios',
+    name: 'Scenarios',
+    component: ScenarioManagementView,
+  },
+  {
+    path: '/sensitivity',
+    name: 'Sensitivity',
+    component: SensitivityAnalysisView,
+  },
+  {
+    path: '/history',
+    name: 'History',
+    component: () => import('../views/RunHistoryView.vue'),
+  },
+  {
+    path: '/compare',
+    name: 'Compare',
+    component: () => import('../views/RunComparisonView.vue'),
   },
   {
     path: '/projects/:id',
     name: 'ContractBuilder',
+    component: ContractBuilderView,
+  },
+  {
+    path: '/builder',
+    name: 'Builder',
     component: ContractBuilderView,
   },
   {
@@ -40,7 +86,24 @@ const routes = [
 
 const router = createRouter({
   history: createWebHistory(),
-  routes,
+  routes: routes.map(route => {
+    // Apply requiresAuth to all routes except login, terms, privacy
+    if (!['Login', 'Terms', 'Privacy'].includes(route.name)) {
+      return { ...route, meta: { ...route.meta, requiresAuth: true } }
+    }
+    return route
+  }),
+})
+
+router.beforeEach((to, from, next) => {
+  const token = localStorage.getItem('token')
+  if (to.meta.requiresAuth && !token) {
+    next({ name: 'Login' })
+  } else if (to.name === 'Login' && token) {
+    next({ name: 'Dashboard' })
+  } else {
+    next()
+  }
 })
 
 export default router

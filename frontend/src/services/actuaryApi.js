@@ -99,6 +99,42 @@ export async function getStochasticJobStatus(jobId, config = {}) {
 }
 
 /**
+ * Start asynchronous Monte Carlo stochastic ESG simulation job
+ * POST /api/v1/esg/simulate/async
+ * 
+ * @param {Object} payload - ESGSimulationRequest
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} AsyncJobCreateResponse { job_id, status }
+ */
+export async function startAsyncESGSimulation(payload, config = {}) {
+  return await httpClient.post('/esg/simulate/async', payload, config)
+}
+
+/**
+ * Fetch persistent run history jobs
+ * GET /api/v1/jobs
+ * 
+ * @param {number} limit - Number of jobs to fetch
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Array>} Array of jobs
+ */
+export async function fetchJobs(limit = 100, config = {}) {
+  return await httpClient.get(`/jobs?limit=${limit}`, config)
+}
+
+/**
+ * Fetch a persistent job by ID
+ * GET /api/v1/jobs/{job_id}
+ * 
+ * @param {string} jobId - The job ID
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} Job data
+ */
+export async function fetchJobById(jobId, config = {}) {
+  return await httpClient.get(`/jobs/${encodeURIComponent(jobId)}`, config)
+}
+
+/**
  * Run synchronous stochastic valuation (legacy / fast simulation)
  * POST /api/v1/valuation/stochastic
  * 
@@ -167,3 +203,215 @@ export async function runStressTest(payload, config = {}) {
 export async function simulateContractGraph(payload, config = {}) {
   return await httpClient.post('/contracts/simulate-graph', payload, config)
 }
+
+/**
+ * Generate a Term Life blueprint from simple guided parameters
+ * POST /api/v1/contracts/guided/term-life
+ * 
+ * @param {Object} payload - GuidedTermLifeRequest
+ * @param {Object} config - Optional Axios request config
+ * @returns {Promise<Object>} ContractGraphPayload
+ */
+export async function generateGuidedTermLife(payload, config = {}) {
+  return await httpClient.post('/contracts/guided/term-life', payload, config)
+}
+
+// ────────────────────────────────────────────────────────────
+// Assumption Management
+// ────────────────────────────────────────────────────────────
+
+export async function fetchAssumptions(type = null) {
+  const params = type ? { type } : {}
+  return await httpClient.get('/assumptions', { params })
+}
+
+export async function fetchAssumptionHistory(id) {
+  return await httpClient.get(`/assumptions/${id}/history`)
+}
+
+export async function createAssumption(payload) {
+  return await httpClient.post('/assumptions', payload)
+}
+
+export async function createAssumptionVersion(id, payload) {
+  return await httpClient.post(`/assumptions/${id}/version`, payload)
+}
+
+export async function updateAssumptionStatus(id, status) {
+  return await httpClient.put(`/assumptions/${id}/status`, { status })
+}
+
+// ────────────────────────────────────────────────────────────
+// Base Model & Scenario Management
+// ────────────────────────────────────────────────────────────
+
+export async function fetchBaseModels() {
+  return await httpClient.get('/models')
+}
+
+export async function fetchBaseModel(id) {
+  return await httpClient.get(`/models/${id}`)
+}
+
+export async function createBaseModel(payload) {
+  return await httpClient.post('/models', payload)
+}
+
+export async function updateBaseModel(id, payload) {
+  return await httpClient.put(`/models/${id}`, payload)
+}
+
+export async function updateBaseModelStatus(id, status) {
+  return await httpClient.put(`/models/${id}/status`, { status })
+}
+
+export async function getBaseModelAuditLogs(id) {
+  return await httpClient.get(`/models/${id}/audit`)
+}
+
+export async function fetchScenarios(baseModelId = null, status = null) {
+  const params = {}
+  if (baseModelId) params.base_model_id = baseModelId
+  if (status) params.status = status
+  return await httpClient.get('/scenarios', { params })
+}
+
+export async function fetchScenario(id) {
+  return await httpClient.get(`/scenarios/${id}`)
+}
+
+export async function createScenario(payload) {
+  return await httpClient.post('/scenarios', payload)
+}
+
+export async function updateScenario(id, payload) {
+  return await httpClient.put(`/scenarios/${id}`, payload)
+}
+
+export async function duplicateScenario(id, newName = null) {
+  const params = newName ? { name: newName } : {}
+  return await httpClient.post(`/scenarios/${id}/duplicate`, null, { params })
+}
+
+export async function validateScenario(id) {
+  return await httpClient.post(`/scenarios/${id}/validate`)
+}
+
+export async function runScenario(id) {
+  return await httpClient.post(`/scenarios/${id}/run`)
+}
+
+export async function deleteScenario(id) {
+  return await httpClient.delete(`/scenarios/${id}`)
+}
+
+export async function fetchSensitivityDefaults() {
+  return await httpClient.get('/sensitivity/defaults')
+}
+
+export async function runSensitivityAnalysisV2(payload, config = {}) {
+  return await httpClient.post('/sensitivity/analyze', payload, config)
+}
+
+export async function fetchSensitivityResult(id) {
+  return await httpClient.get(`/sensitivity/${id}`)
+}
+
+export async function fetchComparableRuns(params = {}) {
+  return await httpClient.get('/runs/comparable', { params })
+}
+
+export async function compareRuns(payload, config = {}) {
+  return await httpClient.post('/runs/compare', payload, config)
+}
+
+/**
+ * Generate download URL for valuation export
+ * @param {string} jobId
+ * @param {string} format 'xlsx' | 'csv' | 'json' | 'csv-zip'
+ * @param {Object} options { sheet, asZip }
+ * @returns {string}
+ */
+export function getValuationExportUrl(jobId, format = 'xlsx', options = {}) {
+  const params = new URLSearchParams()
+  params.set('format', format)
+  if (options.sheet) params.set('sheet', options.sheet)
+  if (options.asZip) params.set('as_zip', 'true')
+  return `${API_BASE}/export/${jobId}?${params.toString()}`
+}
+
+/**
+ * Download exported valuation file directly
+ * @param {string} jobId
+ * @param {string} format 'xlsx' | 'csv' | 'json' | 'csv-zip'
+ * @param {Object} options { sheet, asZip, customFilename }
+ */
+export async function downloadValuationExport(jobId, format = 'xlsx', options = {}) {
+  const url = `/export/${jobId}`
+  const params = { format }
+  if (options.sheet) params.sheet = options.sheet
+  if (options.asZip) params.as_zip = true
+
+  const responseType = format === 'json' ? 'json' : 'blob'
+  const res = await httpClient.get(url, {
+    params,
+    responseType,
+  })
+
+  if (format === 'json') {
+    const jsonStr = JSON.stringify(res, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    _triggerDownload(blob, options.customFilename || `valuation_${jobId.slice(0, 8)}.json`)
+    return res
+  }
+
+  const mimeType =
+    format === 'xlsx'
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : format === 'csv-zip' || options.asZip
+      ? 'application/zip'
+      : 'text/csv;charset=utf-8;'
+
+  const ext =
+    format === 'xlsx' ? 'xlsx' : format === 'csv-zip' || options.asZip ? 'zip' : 'csv'
+  const defaultFilename = `valuation_${jobId.slice(0, 8)}.${ext}`
+
+  const blob = new Blob([res], { type: mimeType })
+  _triggerDownload(blob, options.customFilename || defaultFilename)
+  return res
+}
+
+function _triggerDownload(blob, filename) {
+  const blobUrl = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = blobUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(blobUrl)
+}
+
+/**
+ * Evaluate Model Health for visual contract blueprint DAG
+ * POST /api/v1/contracts/health
+ * @param {Object} payload ContractGraphPayload
+ * @returns {Promise<Object>} ModelHealthReport
+ */
+export async function evaluateContractHealth(payload, config = {}) {
+  return await httpClient.post('/contracts/health', payload, config)
+}
+
+/**
+ * Evaluate Model Health for arbitrary model payload or configuration
+ * POST /api/v1/health/model
+ * @param {Object} payload { blueprint, configuration }
+ * @returns {Promise<Object>} ModelHealthReport
+ */
+export async function evaluateModelHealth(payload, config = {}) {
+  return await httpClient.post('/health/model', payload, config)
+}
+
+
+
+

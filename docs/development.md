@@ -2,8 +2,18 @@
 
 This guide explains how to set up Actura for local development without relying purely on the production Docker cluster.
 
+## Architecture
+
+Actura uses a FastAPI backend with Vue 3 frontend. 
+The core engine is built with NumPy and Numba for vectorization and compilation.
+
+## Job Execution Architecture
+
+To prevent CPU-bound Monte Carlo simulations from blocking the ASGI event loop, Actura delegates heavy computation to a separate process pool.
+See [Job Execution](./job-execution.md) for details on the asynchronous worker system, queueing, and WebSocket progress streaming.
+
 ## 🛠 Prerequisites
-- **Python 3.10+**
+- **Python 3.11+**
 - **Node.js 18+** & NPM
 - **PostgreSQL 15+** (You can use Docker to spin up just the DB, or install locally).
 
@@ -12,28 +22,25 @@ This guide explains how to set up Actura for local development without relying p
    ```bash
    docker run --name actura_dev_db -e POSTGRES_USER=actura_user -e POSTGRES_PASSWORD=actura_password -e POSTGRES_DB=actura_db -p 5432:5432 -d postgres:15-alpine
    ```
-2. The FastAPI backend will automatically use SQLite (`actura_local.db`) if no Postgres `DATABASE_URL` is provided. If you want to use Postgres locally, export it:
+2. The FastAPI backend will automatically use SQLite (`jobs.db`) if no Postgres `DATABASE_URL` is provided. If you want to use Postgres locally, export it:
    ```bash
    export DATABASE_URL="postgresql://actura_user:actura_password@localhost:5432/actura_db"
    ```
 
 ## 🐍 Backend (FastAPI) Setup
-1. Navigate to the engine directory:
+1. Create and activate a virtual environment:
    ```bash
-   cd actuary_engine
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-3. Install dependencies:
+2. Install dependencies:
    ```bash
    pip install -r requirements.txt
+   pip install -e ".[dev,api]"
    ```
-4. Run the server:
+3. Run the server:
    ```bash
-   uvicorn api.main:app --reload --port 8000
+   uvicorn actuary_engine.main:app --reload --port 8000
    ```
    The backend will now be available at `http://localhost:8000`.
 
@@ -59,8 +66,7 @@ This guide explains how to set up Actura for local development without relying p
 ## 🧪 Running Tests
 Actura uses `pytest` for the backend validation.
 ```bash
-cd actuary_engine
-pytest ../tests/ -v
+pytest tests/ -v
 ```
 
 ## 📐 Project Structure Guidelines

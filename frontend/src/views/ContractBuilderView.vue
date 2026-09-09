@@ -19,6 +19,10 @@ import {
   Trash2,
   X,
   Layers,
+  Search,
+  ShieldCheck,
+  AlertTriangle,
+  AlertOctagon,
 } from 'lucide-vue-next'
 
 import '@vue-flow/core/dist/style.css'
@@ -32,9 +36,10 @@ import ContingencyNode from '../components/nodes/ContingencyNode.vue'
 import OutflowNode from '../components/nodes/OutflowNode.vue'
 import ValuationSinkNode from '../components/nodes/ValuationSinkNode.vue'
 import AccumulatorNode from '../components/nodes/AccumulatorNode.vue'
+import ModelHealthDrawer from '../components/ModelHealthDrawer.vue'
 
 import { PRESET_TEMPLATES, layoutGraph } from '../utils/presets'
-import { simulateContractGraph, ActuaryApiError } from '../services/actuaryApi'
+import { simulateContractGraph, evaluateContractHealth, ActuaryApiError } from '../services/actuaryApi'
 import { useLoadingStore } from '../stores/useLoadingStore'
 import { useErrorStore } from '../stores/useErrorStore'
 import ErrorBanner from '../components/ErrorBanner.vue'
@@ -64,6 +69,12 @@ const edges = ref([])
 const isSimulating = ref(false)
 const simulationResult = shallowRef(null)
 const showResultsDrawer = ref(false)
+const selectedTrace = ref(null)
+const isTraceDrawerOpen = ref(false)
+
+const modelHealthReport = ref(null)
+const isHealthDrawerOpen = ref(false)
+const isEvaluatingHealth = ref(false)
 
 const loadingStore = useLoadingStore()
 const errorStore = useErrorStore()
@@ -76,6 +87,10 @@ const reserveChartRef = ref(null)
 let cashFlowChart = null
 let reserveChart = null
 let resizeObserver = null
+
+import { useValuationStore } from '../stores/useValuationStore'
+
+const valuationStore = useValuationStore()
 
 // ────────────────────────────────────────────────────────────
 // Preset Template Loader
@@ -92,6 +107,24 @@ function loadPreset(presetKey) {
   const rawEdges = JSON.parse(JSON.stringify(template.edges))
 
   // Run Dagre auto-layout
+  const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(rawNodes, rawEdges, 'LR')
+
+  nodes.value = layoutedNodes
+  edges.value = layoutedEdges
+
+  nextTick(() => {
+    fitView({ padding: 0.2, duration: 400 })
+    checkModelHealth()
+  })
+}
+
+function loadCustomPayload(payload) {
+  selectedPresetId.value = 'custom_generated'
+  errorStore.clearError()
+
+  const rawNodes = JSON.parse(JSON.stringify(payload.nodes))
+  const rawEdges = JSON.parse(JSON.stringify(payload.edges))
+
   const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(rawNodes, rawEdges, 'LR')
 
   nodes.value = layoutedNodes
@@ -194,9 +227,89 @@ onConnect((params) => {
 // ────────────────────────────────────────────────────────────
 // Simulation Execution & Results Render
 // ────────────────────────────────────────────────────────────
+// Simulation & Health Execution
+// ────────────────────────────────────────────────────────────
+function getCurrentPayload() {
+  return {
+    contract_id: `GRAPH-${selectedPresetId.value || 'CUSTOM'}`,
+    nodes: nodes.value.map((n) => ({
+      id: n.id,
+      type: n.type,
+      data: n.data || {},
+      position: n.position,
+    })),
+    edges: edges.value.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle || null,
+      targetHandle: e.targetHandle || null,
+    })),
+  }
+}
+
+async function checkModelHealth() {
+  if (nodes.value.length === 0) {
+    modelHealthReport.value = null
+    return
+  }
+  isEvaluatingHealth.value = true
+  try {
+    const payload = getCurrentPayload()
+    const res = await evaluateContractHealth(payload)
+    modelHealthReport.value = res.data || res
+  } catch (err) {
+    console.warn('Health evaluation error:', err)
+  } finally {
+    isEvaluatingHealth.value = false
+  }
+}
+
+function openHealthDrawer() {
+  checkModelHealth()
+  isHealthDrawerOpen.value = true
+}
+
+function handleHighlightNode(nodeId) {
+  if (!nodeId) return
+  nodes.value = nodes.value.map((n) => ({
+    ...n,
+    class:
+      n.id === nodeId
+        ? 'ring-4 ring-amber-500 ring-offset-4 ring-offset-[#0B0F19] shadow-[0_0_30px_rgba(245,158,11,0.5)] z-50 scale-105 transition-all duration-300'
+        : 'opacity-40 transition-all duration-300',
+  }))
+  isHealthDrawerOpen.value = false
+  setTimeout(() => {
+    fitView({ nodes: [nodeId], padding: 0.6, duration: 600 })
+  }, 100)
+}
+
+const healthButtonClass = computed(() => {
+  if (!modelHealthReport.value) return 'bg-slate-800 text-slate-300 border-slate-700'
+  if (modelHealthReport.value.overall_status === 'PASS') {
+    return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+  }
+  if (modelHealthReport.value.overall_status === 'WARNING') {
+    return 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+  }
+  return 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20 animate-pulse'
+})
+
 async function runSimulation() {
   if (nodes.value.length === 0) {
     errorStore.setError({ code: 'EMPTY_BLUEPRINT', message: 'Canvas is empty. Add nodes or load a preset template.' })
+    return
+  }
+
+  // Pre-flight Model Health audit
+  await checkModelHealth()
+  if (modelHealthReport.value && !modelHealthReport.value.is_ready_to_run) {
+    isHealthDrawerOpen.value = true
+    errorStore.setError({
+      code: 'PREFLIGHT_BLOCKED',
+      message: 'Pre-flight check failed: Model has critical defects. Open Model Health to inspect blockers.'
+    })
     return
   }
 
@@ -232,26 +345,35 @@ async function runSimulation() {
     loadingStore.updateStep('prepare', 'complete')
     loadingStore.updateStep('projection', 'active')
     
-    // Save blueprint to DB
+    let res = null
     const projectId = route.params.id
-    const saveResponse = await projectApi.saveBlueprint(projectId, "Draft Blueprint", payload)
-    const contract = saveResponse.data || saveResponse
-    
-    loadingStore.updateStep('projection', 'complete')
-    loadingStore.updateStep('stochastic', 'active')
-    
-    // Run Valuation
-    const runResponse = await projectApi.runValuation(projectId, contract.id)
-    const run = runResponse.data || runResponse
-    
-    // Fetch result
-    let res = null;
-    if (run.status === 'completed') {
-       const resultResponse = await projectApi.getValuationResult(projectId, run.id)
-       const resultData = resultResponse.data || resultResponse
-       res = resultData.result?.full_output || {}
+
+    if (projectId) {
+      // Save blueprint to DB
+      const saveResponse = await projectApi.saveBlueprint(projectId, "Draft Blueprint", payload)
+      const contract = saveResponse.data || saveResponse
+      
+      loadingStore.updateStep('projection', 'complete')
+      loadingStore.updateStep('stochastic', 'active')
+      
+      // Run Valuation
+      const runResponse = await projectApi.runValuation(projectId, contract.id)
+      const run = runResponse.data || runResponse
+      
+      // Fetch result
+      if (run.status === 'completed') {
+         const resultResponse = await projectApi.getValuationResult(projectId, run.id)
+         const resultData = resultResponse.data || resultResponse
+         res = resultData.result?.full_output || {}
+      } else {
+         throw new Error(`Valuation failed: ${run.status}`)
+      }
     } else {
-       throw new Error(`Valuation failed: ${run.status}`)
+      // Standalone simulation (Sandbox or Guided Mode)
+      loadingStore.updateStep('projection', 'complete')
+      loadingStore.updateStep('stochastic', 'active')
+      const simResponse = await simulateContractGraph(payload)
+      res = simResponse.data || simResponse
     }
 
     loadingStore.updateStep('stochastic', 'complete')
@@ -381,43 +503,84 @@ function renderResultCharts() {
 }
 
 // ────────────────────────────────────────────────────────────
+// Provenance Tracing Layer
+// ────────────────────────────────────────────────────────────
+function openTrace(metricKey) {
+  if (!simulationResult.value?.provenance || !simulationResult.value.provenance[metricKey]) {
+    return
+  }
+  selectedTrace.value = simulationResult.value.provenance[metricKey]
+  isTraceDrawerOpen.value = true
+}
+
+function highlightSourceNodes() {
+  if (!selectedTrace.value || !selectedTrace.value.source_nodes) return
+  const sourceIds = selectedTrace.value.source_nodes
+  
+  // Highlight nodes in vue-flow
+  nodes.value = nodes.value.map(n => ({
+    ...n,
+    class: sourceIds.includes(n.id) 
+      ? 'ring-4 ring-amber-500 ring-offset-4 ring-offset-[#0B0F19] shadow-[0_0_30px_rgba(245,158,11,0.5)] z-50 scale-105 transition-all duration-300' 
+      : 'opacity-40 transition-all duration-300'
+  }))
+  
+  // Close drawers and fit view
+  isTraceDrawerOpen.value = false
+  showResultsDrawer.value = false
+  setTimeout(() => {
+    fitView({ nodes: sourceIds, padding: 0.5, duration: 600 })
+  }, 100)
+}
+
+function clearHighlight() {
+  nodes.value = nodes.value.map(n => ({ ...n, class: '' }))
+  fitView({ padding: 0.2, duration: 400 })
+}
+
+// ────────────────────────────────────────────────────────────
 // Lifecycle
 // ────────────────────────────────────────────────────────────
 onMounted(async () => {
-  const projectId = route.params.id
-  if (projectId) {
-    try {
-      const response = await projectApi.listBlueprints(projectId)
-      const contracts = response.data || response
-      if (contracts && contracts.length > 0) {
-        const contract = contracts[0] // Load latest/first contract
-        const blueprint = contract.blueprint_json
-        
-        // Populate nodes and edges from blueprint
-        if (blueprint.nodes && blueprint.edges) {
-          // If nodes don't have positions (e.g. fresh from wizard preset), auto-layout them
-          const needsLayout = blueprint.nodes.some(n => !n.position)
-          if (needsLayout) {
-            const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(blueprint.nodes, blueprint.edges, 'LR')
-            nodes.value = layoutedNodes
-            edges.value = layoutedEdges
+  if (valuationStore.customBlueprintPayload) {
+    loadCustomPayload(valuationStore.customBlueprintPayload)
+    valuationStore.clearCustomBlueprintPayload()
+  } else {
+    const projectId = route.params.id
+    if (projectId) {
+      try {
+        const response = await projectApi.listBlueprints(projectId)
+        const contracts = response.data || response
+        if (contracts && contracts.length > 0) {
+          const contract = contracts[0] // Load latest/first contract
+          const blueprint = contract.blueprint_json
+          
+          // Populate nodes and edges from blueprint
+          if (blueprint.nodes && blueprint.edges) {
+            // If nodes don't have positions (e.g. fresh from wizard preset), auto-layout them
+            const needsLayout = blueprint.nodes.some(n => !n.position)
+            if (needsLayout) {
+              const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(blueprint.nodes, blueprint.edges, 'LR')
+              nodes.value = layoutedNodes
+              edges.value = layoutedEdges
+            } else {
+              nodes.value = blueprint.nodes
+              edges.value = blueprint.edges
+            }
+            nextTick(() => fitView({ padding: 0.2, duration: 400 }))
           } else {
-            nodes.value = blueprint.nodes
-            edges.value = blueprint.edges
+            loadPreset('term_life_20y')
           }
-          nextTick(() => fitView({ padding: 0.2, duration: 400 }))
         } else {
           loadPreset('term_life_20y')
         }
-      } else {
+      } catch (err) {
+        console.error("Failed to fetch blueprint:", err)
         loadPreset('term_life_20y')
       }
-    } catch (err) {
-      console.error("Failed to fetch blueprint:", err)
-      loadPreset('term_life_20y')
+    } else {
+      loadPreset(selectedPresetId.value || 'term_life_20y')
     }
-  } else {
-    loadPreset('term_life_20y')
   }
 
   resizeObserver = new ResizeObserver(() => {
@@ -488,11 +651,34 @@ onUnmounted(() => {
         </button>
 
         <button
+          v-if="nodes.some(n => n.class?.includes('ring-amber-500'))"
+          @click="clearHighlight"
+          class="btn-secondary text-xs px-3 py-1.5 flex items-center space-x-1.5 text-amber-400 hover:text-amber-300 border-amber-500/30 rounded-md"
+        >
+          <span>Clear Trace</span>
+        </button>
+
+        <button
           @click="clearCanvas"
           class="btn-secondary text-xs px-2.5 py-1.5 text-slate-400 hover:text-rose-400 rounded-md"
           title="Clear all nodes"
         >
           <Trash2 class="h-3.5 w-3.5" />
+        </button>
+
+        <!-- Model Health Pre-flight Indicator Button -->
+        <button
+          @click="openHealthDrawer"
+          :class="[
+            'text-xs px-3 py-1.5 flex items-center space-x-1.5 rounded-md border font-medium transition',
+            healthButtonClass
+          ]"
+          title="Inspect Model Health across 7 categories before valuation"
+        >
+          <ShieldCheck v-if="modelHealthReport?.overall_status === 'PASS'" class="h-3.5 w-3.5 text-emerald-400" />
+          <AlertTriangle v-else-if="modelHealthReport?.overall_status === 'WARNING'" class="h-3.5 w-3.5 text-amber-400" />
+          <AlertOctagon v-else class="h-3.5 w-3.5 text-rose-400" />
+          <span>Health: {{ modelHealthReport?.overall_score ?? '--' }}/100</span>
         </button>
 
         <button
@@ -613,7 +799,12 @@ onUnmounted(() => {
         <!-- KPI Strip -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div class="card p-3.5">
-            <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Best Estimate Liability (BEL)</div>
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Best Estimate Liability (BEL)</div>
+              <button v-if="simulationResult.provenance?.total_bel" @click="openTrace('total_bel')" class="flex items-center space-x-1 text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/20 transition-colors">
+                <Search class="w-3 h-3" /> <span>Trace</span>
+              </button>
+            </div>
             <div class="text-xl font-semibold text-sky-400 mt-1 font-mono">
               {{ formatCurrency(simulationResult.total_bel) }}
             </div>
@@ -621,7 +812,12 @@ onUnmounted(() => {
           </div>
 
           <div class="card p-3.5">
-            <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Equivalence Gross Premium</div>
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Equivalence Gross Premium</div>
+              <button v-if="simulationResult.provenance?.annual_premium" @click="openTrace('annual_premium')" class="flex items-center space-x-1 text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/20 transition-colors">
+                <Search class="w-3 h-3" /> <span>Trace</span>
+              </button>
+            </div>
             <div class="text-xl font-semibold text-emerald-400 mt-1 font-mono">
               {{ formatCurrency(simulationResult.annual_premium) }} / yr
             </div>
@@ -700,6 +896,80 @@ onUnmounted(() => {
 
       </div>
     </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 4. PROVENANCE TRACE MODAL                               -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <div v-if="isTraceDrawerOpen && selectedTrace" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div class="bg-[#0F172A] border border-white/[0.1] shadow-2xl rounded-xl w-full max-w-2xl flex flex-col overflow-hidden">
+        <div class="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between bg-[#182234]">
+          <div class="flex items-center space-x-2.5">
+            <Search class="w-4 h-4 text-amber-400" />
+            <h3 class="text-sm font-semibold text-white">Calculation Provenance: {{ selectedTrace.metric_name }}</h3>
+          </div>
+          <button @click="isTraceDrawerOpen = false" class="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+        
+        <div class="p-6 space-y-6">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Computed Value</div>
+              <div class="text-2xl font-semibold text-amber-400 mt-1 font-mono">{{ formatCurrency(selectedTrace.value) }}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Calculation Stage</div>
+              <div class="text-sm font-medium text-slate-300 mt-1">{{ selectedTrace.calculation_stage }}</div>
+            </div>
+          </div>
+          
+          <div class="card p-4 space-y-2 border-amber-500/20 bg-amber-500/5">
+            <h4 class="text-xs font-medium text-slate-300">Actuarial Narrative</h4>
+            <p class="text-sm text-slate-400 leading-relaxed">{{ selectedTrace.calculation_description }}</p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div class="card p-4 space-y-3">
+              <h4 class="text-xs font-medium text-slate-300">Contributing Components</h4>
+              <ul class="space-y-1.5">
+                <li v-for="comp in selectedTrace.contributing_components" :key="comp" class="flex items-center space-x-2 text-xs text-slate-400">
+                  <span class="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
+                  <span>{{ comp }}</span>
+                </li>
+              </ul>
+            </div>
+            <div class="card p-4 space-y-3">
+              <h4 class="text-xs font-medium text-slate-300">Relevant Assumptions</h4>
+              <ul class="space-y-1.5">
+                <li v-for="(val, key) in selectedTrace.relevant_assumptions" :key="key" class="flex items-center justify-between text-xs text-slate-400 border-b border-white/[0.04] pb-1 last:border-0 last:pb-0">
+                  <span>{{ key }}</span>
+                  <span class="font-mono text-slate-300">{{ val }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        
+        <div class="px-5 py-4 border-t border-white/[0.06] bg-[#182234] flex items-center justify-end space-x-3">
+          <button @click="isTraceDrawerOpen = false" class="btn-secondary text-xs px-4 py-1.5 rounded-md">Close</button>
+          <button @click="highlightSourceNodes" class="btn-primary text-xs px-4 py-1.5 rounded-md flex items-center space-x-2 border-amber-500/50 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 hover:text-amber-300">
+            <Target class="w-3.5 h-3.5" />
+            <span>Highlight Blueprint Nodes</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. MODEL HEALTH DRAWER -->
+    <ModelHealthDrawer
+      :isOpen="isHealthDrawerOpen"
+      :report="modelHealthReport"
+      :loading="isEvaluatingHealth"
+      @close="isHealthDrawerOpen = false"
+      @recheck="checkModelHealth"
+      @highlightNode="handleHighlightNode"
+    />
 
   </div>
 </template>

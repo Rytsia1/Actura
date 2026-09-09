@@ -1,35 +1,45 @@
-
 services:
-  postgres:
+  # ─────────────────────────────────────────────────────────
+  # Backend Services
+  # ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=${PORT:-8000}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actura_user}:${POSTGRES_PASSWORD:-actura_password}@db:5432/${POSTGRES_DB:-actura_db}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-actura_super_secret_development_key}
+
+  # ─────────────────────────────────────────────────────────
+  # Database Services
+  # ─────────────────────────────────────────────────────────
+  db:
     image: postgres:15-alpine
     container_name: actura_postgres
     environment:
-      POSTGRES_USER: actura_user
-      POSTGRES_PASSWORD: actura_password
-      POSTGRES_DB: actura_db
+      POSTGRES_USER: ${POSTGRES_USER:-actura_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-actura_password}
+      POSTGRES_DB: ${POSTGRES_DB:-actura_db}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U actura_user -d actura_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-actura_user} -d ${POSTGRES_DB:-actura_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  backend:
-    build: .
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      - PYTHONUNBUFFERED=1
-      - PORT=${PORT:-8000}
-      - MORTALITY_TABLE_PATH=/app/data/soa_ilt.csv
-      - DATABASE_URL=postgresql://actura_user:actura_password@postgres:5432/actura_db
-
+  # ─────────────────────────────────────────────────────────
+  # Frontend Services
+  # ─────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
